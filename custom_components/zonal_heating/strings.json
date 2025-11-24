@@ -45,12 +45,16 @@
                 "data": {
                     "temp_differential": "Temperature Differential (°C)",
                     "min_cycle_time": "Minimum Cycle Time (minutes)",
-                    "window_delay": "Window Open Delay (seconds)"
+                    "window_delay": "Window Open Delay (seconds)",
+                    "person_entities": "Person Entities (Optional)",
+                    "away_temperature": "Away Mode Temperature (°C)"
                 },
                 "data_description": {
                     "temp_differential": "How far below target temperature before requesting heat (e.g., 0.5°C means heat when 0.5° below target)",
                     "min_cycle_time": "Minimum time between zone thermostat on/off changes to prevent rapid cycling",
-                    "window_delay": "Wait time after window opens before pausing heating (prevents false triggers)"
+                    "window_delay": "Wait time after window opens before pausing heating (prevents false triggers)",
+                    "person_entities": "People to track for away mode - when all are away, heating enters low power mode",
+                    "away_temperature": "Temperature to set all TRVs to when everyone is away (default: 16°C)"
                 }
             },
             "reconfigure": {
@@ -131,12 +135,16 @@
                 "data": {
                     "temp_differential": "[%key:component::zonal_heating::config::step::settings::data::temp_differential%]",
                     "min_cycle_time": "[%key:component::zonal_heating::config::step::settings::data::min_cycle_time%]",
-                    "window_delay": "[%key:component::zonal_heating::config::step::settings::data::window_delay%]"
+                    "window_delay": "[%key:component::zonal_heating::config::step::settings::data::window_delay%]",
+                    "person_entities": "[%key:component::zonal_heating::config::step::settings::data::person_entities%]",
+                    "away_temperature": "[%key:component::zonal_heating::config::step::settings::data::away_temperature%]"
                 },
                 "data_description": {
                     "temp_differential": "[%key:component::zonal_heating::config::step::settings::data_description::temp_differential%]",
                     "min_cycle_time": "[%key:component::zonal_heating::config::step::settings::data_description::min_cycle_time%]",
-                    "window_delay": "[%key:component::zonal_heating::config::step::settings::data_description::window_delay%]"
+                    "window_delay": "[%key:component::zonal_heating::config::step::settings::data_description::window_delay%]",
+                    "person_entities": "[%key:component::zonal_heating::config::step::settings::data_description::person_entities%]",
+                    "away_temperature": "[%key:component::zonal_heating::config::step::settings::data_description::away_temperature%]"
                 }
             }
         }

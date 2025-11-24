@@ -10,13 +10,16 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.components.binary_sensor import DOMAIN as BINARY_SENSOR_DOMAIN
 from homeassistant.components.climate import DOMAIN as CLIMATE_DOMAIN
+from homeassistant.components.person import DOMAIN as PERSON_DOMAIN
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_AWAY_TEMPERATURE,
     CONF_MIN_CYCLE_TIME,
+    CONF_PERSON_ENTITIES,
     CONF_PRIORITY,
     CONF_ROOMS,
     CONF_SETTINGS,
@@ -27,6 +30,7 @@ from .const import (
     CONF_ZONE_NAME,
     CONF_ZONE_THERMOSTAT,
     CONF_ZONES,
+    DEFAULT_AWAY_TEMPERATURE,
     DEFAULT_MIN_CYCLE_TIME,
     DEFAULT_PRIORITY,
     DEFAULT_TEMP_DIFFERENTIAL,
@@ -222,6 +226,8 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_TEMP_DIFFERENTIAL: user_input[CONF_TEMP_DIFFERENTIAL],
                     CONF_MIN_CYCLE_TIME: user_input[CONF_MIN_CYCLE_TIME],
                     CONF_WINDOW_DELAY: user_input[CONF_WINDOW_DELAY],
+                    CONF_PERSON_ENTITIES: user_input.get(CONF_PERSON_ENTITIES, []),
+                    CONF_AWAY_TEMPERATURE: user_input[CONF_AWAY_TEMPERATURE],
                 },
             }
 
@@ -246,6 +252,16 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_WINDOW_DELAY,
                         default=DEFAULT_WINDOW_DELAY,
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=300)),
+                    vol.Optional(CONF_PERSON_ENTITIES): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=PERSON_DOMAIN,
+                            multiple=True,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_AWAY_TEMPERATURE,
+                        default=DEFAULT_AWAY_TEMPERATURE,
+                    ): vol.All(vol.Coerce(float), vol.Range(min=5.0, max=25.0)),
                 }
             ),
         )
@@ -527,6 +543,8 @@ class ZonalHeatingOptionsFlow(config_entries.OptionsFlow):
                     CONF_TEMP_DIFFERENTIAL: user_input[CONF_TEMP_DIFFERENTIAL],
                     CONF_MIN_CYCLE_TIME: user_input[CONF_MIN_CYCLE_TIME],
                     CONF_WINDOW_DELAY: user_input[CONF_WINDOW_DELAY],
+                    CONF_PERSON_ENTITIES: user_input.get(CONF_PERSON_ENTITIES, []),
+                    CONF_AWAY_TEMPERATURE: user_input[CONF_AWAY_TEMPERATURE],
                 },
             )
 
@@ -559,6 +577,21 @@ class ZonalHeatingOptionsFlow(config_entries.OptionsFlow):
                             CONF_WINDOW_DELAY, DEFAULT_WINDOW_DELAY
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=300)),
+                    vol.Optional(
+                        CONF_PERSON_ENTITIES,
+                        default=current_settings.get(CONF_PERSON_ENTITIES, []),
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=PERSON_DOMAIN,
+                            multiple=True,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_AWAY_TEMPERATURE,
+                        default=current_settings.get(
+                            CONF_AWAY_TEMPERATURE, DEFAULT_AWAY_TEMPERATURE
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=5.0, max=25.0)),
                 }
             ),
         )

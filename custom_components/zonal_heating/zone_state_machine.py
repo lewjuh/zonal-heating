@@ -8,11 +8,12 @@ import logging
 from typing import TYPE_CHECKING
 
 from homeassistant.components.climate import (
+    DOMAIN as CLIMATE_DOMAIN,
     SERVICE_SET_HVAC_MODE,
     SERVICE_SET_TEMPERATURE,
     HVACMode,
 )
-from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE
+from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE, STATE_HOME
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
 
@@ -34,6 +35,8 @@ class ZoneStateMachine:
         zone_climate: str,
         rooms: list[RoomStateMachine],
         min_cycle_time: int = 5,
+        person_entities: list[str] | None = None,
+        away_temperature: float = 16.0,
     ) -> None:
         """Initialize zone state machine."""
         self.hass = hass
@@ -41,11 +44,15 @@ class ZoneStateMachine:
         self.zone_climate = zone_climate
         self.rooms = rooms
         self.min_cycle_time = min_cycle_time
+        self.person_entities = person_entities or []
+        self.away_temperature = away_temperature
 
         # State tracking
         self._zone_is_on = False
         self._last_zone_change: datetime | None = None
         self._zone_current_temp: float | None = None
+        self._away_mode = False
+        self._people_home_count = 0
 
         # Retry timer for min_cycle_time blocking
         self._retry_timer: asyncio.TimerHandle | None = None
@@ -80,8 +87,26 @@ class ZoneStateMachine:
             )
         )
 
+        # Track person entities if configured
+        if self.person_entities:
+            self._remove_listeners.append(
+                async_track_state_change_event(
+                    self.hass,
+                    self.person_entities,
+                    self._async_person_changed,
+                )
+            )
+            _LOGGER.info(
+                "%s: Tracking %d person entities for away mode",
+                self.zone_name,
+                len(self.person_entities),
+            )
+
         # Update zone climate state
         await self._async_update_zone_climate_state()
+
+        # Update person states
+        self._update_person_states()
 
         # Do initial evaluation
         await self._async_evaluate_zone()
@@ -116,6 +141,28 @@ class ZoneStateMachine:
         )
         self.hass.async_create_task(self._async_evaluate_zone())
 
+    @callback
+    def _async_person_changed(self, event: Event) -> None:
+        """Handle person state changes."""
+        entity_id = event.data.get("entity_id")
+        new_state = event.data.get("new_state")
+
+        if new_state:
+            old_away_mode = self._away_mode
+            self._update_person_states()
+
+            if old_away_mode != self._away_mode:
+                _LOGGER.info(
+                    "%s: 🏠 Away mode changed: %s → %s (People home: %d/%d)",
+                    self.zone_name,
+                    "AWAY" if old_away_mode else "HOME",
+                    "AWAY" if self._away_mode else "HOME",
+                    self._people_home_count,
+                    len(self.person_entities),
+                )
+                # Trigger immediate zone evaluation when away mode changes
+                self.hass.async_create_task(self._async_evaluate_zone())
+
     async def _async_update_zone_climate_state(self) -> None:
         """Update zone climate state from entity."""
         state = self.hass.states.get(self.zone_climate)
@@ -124,6 +171,33 @@ class ZoneStateMachine:
 
         self._zone_current_temp = state.attributes.get("current_temperature")
         self._zone_is_on = state.state == HVACMode.HEAT
+
+    def _update_person_states(self) -> None:
+        """Update person states and away mode."""
+        if not self.person_entities:
+            self._away_mode = False
+            self._people_home_count = 0
+            return
+
+        # Count people who are home
+        people_home = sum(
+            1
+            for person_entity in self.person_entities
+            if self.hass.states.is_state(person_entity, STATE_HOME)
+        )
+
+        self._people_home_count = people_home
+        self._away_mode = people_home == 0
+
+    @property
+    def away_mode(self) -> bool:
+        """Return True if in away mode (all people away)."""
+        return self._away_mode
+
+    @property
+    def people_home_count(self) -> int:
+        """Return number of people currently home."""
+        return self._people_home_count
 
     async def _async_evaluate_zone(self) -> None:
         """Evaluate zone state based on room states."""
@@ -135,6 +209,15 @@ class ZoneStateMachine:
         _LOGGER.info("=" * 60)
         _LOGGER.info("%s: ZONE EVALUATION STARTED", self.zone_name)
         _LOGGER.info("=" * 60)
+
+        # Check if away mode is active
+        if self._away_mode and self.person_entities:
+            _LOGGER.info(
+                "%s: 🏠 AWAY MODE ACTIVE - All people away, entering low power mode",
+                self.zone_name,
+            )
+            await self._async_handle_away_mode()
+            return
 
         # Find rooms that need heat
         rooms_needing_heat = [
@@ -182,6 +265,60 @@ class ZoneStateMachine:
 
         # Update zone climate
         await self._async_update_zone_climate(desired_zone_on, rooms_needing_heat)
+
+    async def _async_handle_away_mode(self) -> None:
+        """Handle away mode - set all TRVs to away temperature and turn off zone."""
+        _LOGGER.info("🏠" * 30)
+        _LOGGER.info(
+            "%s: 🏠 AWAY MODE - Setting all TRVs to %.1f°C and turning zone OFF",
+            self.zone_name,
+            self.away_temperature,
+        )
+
+        # Set all room TRVs to away temperature
+        for room in self.rooms:
+            _LOGGER.info(
+                "%s:   → Setting %s to away temperature (%.1f°C)",
+                self.zone_name,
+                room.room_name,
+                self.away_temperature,
+            )
+
+            # Set temperature on the TRV
+            await self.hass.services.async_call(
+                CLIMATE_DOMAIN,
+                SERVICE_SET_TEMPERATURE,
+                {
+                    ATTR_ENTITY_ID: room.climate_entity,
+                    ATTR_TEMPERATURE: self.away_temperature,
+                },
+                blocking=False,
+            )
+
+        # Turn off zone thermostat
+        zone_state = self.hass.states.get(self.zone_climate)
+        if zone_state and zone_state.state == HVACMode.HEAT:
+            _LOGGER.info(
+                "%s: ❄️  Turning zone thermostat OFF for away mode",
+                self.zone_name,
+            )
+            await self.hass.services.async_call(
+                CLIMATE_DOMAIN,
+                SERVICE_SET_HVAC_MODE,
+                {
+                    ATTR_ENTITY_ID: self.zone_climate,
+                    "hvac_mode": HVACMode.OFF,
+                },
+                blocking=True,
+            )
+            self._zone_is_on = False
+
+        _LOGGER.info(
+            "%s: ✅ Away mode complete - all TRVs at %.1f°C, zone OFF",
+            self.zone_name,
+            self.away_temperature,
+        )
+        _LOGGER.info("🏠" * 30)
 
     def _should_respect_min_cycle_time(self, desired_on: bool) -> bool:
         """Check if we should respect minimum cycle time."""

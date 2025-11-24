@@ -25,7 +25,9 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
+    ATTR_AWAY_MODE,
     ATTR_HEAT_REQUESTING,
+    ATTR_PEOPLE_HOME,
     ATTR_PRIORITY,
     ATTR_WINDOW_OPEN,
     ATTR_ZONE_ACTIVE,
@@ -36,6 +38,7 @@ from .const import (
     CONF_WINDOW_SENSORS,
     CONF_ZONES,
     DEFAULT_PRIORITY,
+    DOMAIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -282,6 +285,12 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
+        # Get zone state machine for away mode info
+        zone_coordinator = None
+        if DOMAIN in self.hass.data and self._entry_id in self.hass.data[DOMAIN]:
+            coordinators = self.hass.data[DOMAIN][self._entry_id].get("coordinators", {})
+            zone_coordinator = coordinators.get(self._zone_name)
+
         attrs = {
             ATTR_ZONE_ACTIVE: self._zone_active,
             ATTR_WINDOW_OPEN: self._window_open,
@@ -291,8 +300,16 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             "trv_entity": self._trv_entity,
         }
 
+        # Add away mode info if zone coordinator available
+        if zone_coordinator:
+            attrs[ATTR_AWAY_MODE] = zone_coordinator.away_mode
+            if zone_coordinator.person_entities:
+                attrs[ATTR_PEOPLE_HOME] = zone_coordinator.people_home_count
+
         # Determine why active/inactive
-        if self.hvac_action == HVACAction.HEATING:
+        if zone_coordinator and zone_coordinator.away_mode:
+            attrs["why_inactive"] = "Away mode - low power"
+        elif self.hvac_action == HVACAction.HEATING:
             attrs["why_active"] = "Heating to target temperature"
         elif self.hvac_action == HVACAction.IDLE and self._heat_requesting:
             attrs["why_inactive"] = "Waiting for zone to activate"

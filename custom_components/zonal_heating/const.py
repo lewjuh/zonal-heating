@@ -22,12 +22,15 @@ CONF_SETTINGS = "settings"
 CONF_TEMP_DIFFERENTIAL = "temp_differential"
 CONF_MIN_CYCLE_TIME = "min_cycle_time"
 CONF_WINDOW_DELAY = "window_delay"
+CONF_PERSON_ENTITIES = "person_entities"
+CONF_AWAY_TEMPERATURE = "away_temperature"
 
 # Default values
 DEFAULT_TEMP_DIFFERENTIAL = 0.5  # °C below target to trigger heat
 DEFAULT_MIN_CYCLE_TIME = 5  # Minutes between zone state changes
 DEFAULT_WINDOW_DELAY = 30  # Seconds to wait after window opens
 DEFAULT_PRIORITY = 5  # Default room priority (1-10 scale)
+DEFAULT_AWAY_TEMPERATURE = 16.0  # °C temperature when all away
 
 # Update intervals
 UPDATE_INTERVAL_ZONE_EVAL = 30  # Seconds between zone evaluations
@@ -46,3 +49,5 @@ ATTR_ZONE_ACTIVE = "zone_active"
 ATTR_WINDOW_OPEN = "window_open"
 ATTR_HEAT_REQUESTING = "heat_requesting"
 ATTR_PRIORITY = "priority"
+ATTR_AWAY_MODE = "away_mode"
+ATTR_PEOPLE_HOME = "people_home"
