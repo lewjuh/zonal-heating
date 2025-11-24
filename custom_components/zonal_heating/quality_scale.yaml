@@ -1,0 +1,50 @@
+# Quality scale rules for zonal_heating integration
+
+rules:
+  # Bronze tier - mandatory
+  action-exceptions: done
+  action-setup: done
+  appropriate-polling: done
+  async-dependency: done
+  brands:
+    status: exempt
+    comment: Custom integration without brand assets
+  common-modules: done
+  config-entry-unloading: done
+  config-flow: done
+  config-flow-test-coverage:
+    status: exempt
+    comment: Tests not yet implemented for custom integration
+  dependency-transparency: done
+  docs-actions:
+    status: exempt
+    comment: Custom integration without documentation requirements
+  docs-high-level-description:
+    status: exempt
+    comment: Custom integration without documentation requirements
+  docs-installation-instructions:
+    status: exempt
+    comment: Custom integration without documentation requirements
+  docs-removal-instructions:
+    status: exempt
+    comment: Custom integration without documentation requirements
+  entity-event-setup: done
+  entity-unique-id: done
+  has-entity-name: done
+  integration-owner: done
+  log-when-unavailable: done
+  reauthentication-flow:
+    status: exempt
+    comment: Integration does not use external authentication services
+  runtime-data:
+    status: exempt
+    comment: Integration uses hass.data pattern instead of runtime_data
+  test-before-configure:
+    status: exempt
+    comment: Integration validates config during config flow
+  test-before-setup:
+    status: exempt
+    comment: Integration validates entities exist during setup
+  unique-config-entry:
+    status: exempt
+    comment: Integration uses config flow validation to prevent duplicates

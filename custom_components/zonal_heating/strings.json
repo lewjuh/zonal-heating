@@ -1,0 +1,144 @@
+{
+    "config": {
+        "step": {
+            "add_zone": {
+                "title": "Add a Heating Zone",
+                "description": "A zone is an area controlled by a single thermostat (e.g., Ground Floor, First Floor). You'll add rooms to this zone in the next step.",
+                "data": {
+                    "name": "Zone Name",
+                    "zone_thermostat": "Zone Thermostat"
+                },
+                "data_description": {
+                    "name": "Name for this zone (e.g., 'Ground Floor', 'Upstairs')",
+                    "zone_thermostat": "The main thermostat that controls heating for this zone"
+                }
+            },
+            "add_room": {
+                "title": "Add Room to {zone_name}",
+                "description": "Add a room with its TRV and optional window sensors. You have added {room_count} room(s) so far.",
+                "data": {
+                    "name": "Room Name",
+                    "trv_entity": "TRV Climate Entity",
+                    "window_sensors": "Window Sensors (Optional)",
+                    "priority": "Heating Priority"
+                },
+                "data_description": {
+                    "name": "Name for this room (e.g., 'Living Room', 'Bedroom')",
+                    "trv_entity": "The climate entity for this room's radiator valve",
+                    "window_sensors": "Window/door sensors - heating pauses when open",
+                    "priority": "Priority for this room (1-10, where 10 is highest priority)"
+                }
+            },
+            "zone_complete": {
+                "title": "Zone {zone_name} complete",
+                "description": "You have added {room_count} room(s) to this zone. Would you like to add another room?",
+                "data": {"add_another_room": "Add another room to this zone"}
+            },
+            "zones_complete": {
+                "title": "Zones Configuration Complete",
+                "description": "You have configured {zone_count} zone(s). Would you like to add another zone or continue to global settings?",
+                "data": {"add_another_zone": "Add another zone"}
+            },
+            "settings": {
+                "title": "Global Heating Settings",
+                "description": "Configure global settings that apply to all zones and rooms.",
+                "data": {
+                    "temp_differential": "Temperature Differential (°C)",
+                    "min_cycle_time": "Minimum Cycle Time (minutes)",
+                    "window_delay": "Window Open Delay (seconds)"
+                },
+                "data_description": {
+                    "temp_differential": "How far below target temperature before requesting heat (e.g., 0.5°C means heat when 0.5° below target)",
+                    "min_cycle_time": "Minimum time between zone thermostat on/off changes to prevent rapid cycling",
+                    "window_delay": "Wait time after window opens before pausing heating (prevents false triggers)"
+                }
+            },
+            "reconfigure": {
+                "title": "Edit Zone Configuration",
+                "description": "You have {zone_count} configured zone(s). Select which zone to edit.",
+                "data": {
+                    "zone_to_edit": "Zone to edit"
+                }
+            },
+            "reconfigure_zone": {
+                "title": "Edit Zone Details",
+                "description": "Update the zone name or thermostat.",
+                "data": {
+                    "name": "[%key:component::zonal_heating::config::step::add_zone::data::name%]",
+                    "zone_thermostat": "[%key:component::zonal_heating::config::step::add_zone::data::zone_thermostat%]"
+                },
+                "data_description": {
+                    "name": "[%key:component::zonal_heating::config::step::add_zone::data_description::name%]",
+                    "zone_thermostat": "[%key:component::zonal_heating::config::step::add_zone::data_description::zone_thermostat%]"
+                }
+            },
+            "reconfigure_zone_menu": {
+                "title": "Manage {zone_name} rooms",
+                "description": "This zone has {room_count} room(s). Choose an action.",
+                "data": {
+                    "action": "Action"
+                }
+            },
+            "select_room_to_edit": {
+                "title": "Select Room to Edit",
+                "description": "Choose which room you want to edit.",
+                "data": {
+                    "room_to_edit": "Room to edit"
+                }
+            },
+            "select_room_to_delete": {
+                "title": "Select Room to Delete",
+                "description": "Choose which room you want to delete.",
+                "data": {
+                    "room_to_delete": "Room to delete"
+                }
+            },
+            "reconfigure_room": {
+                "title": "Edit Room in {zone_name}",
+                "description": "Update the room details.",
+                "data": {
+                    "name": "[%key:component::zonal_heating::config::step::add_room::data::name%]",
+                    "trv_entity": "[%key:component::zonal_heating::config::step::add_room::data::trv_entity%]",
+                    "window_sensors": "[%key:component::zonal_heating::config::step::add_room::data::window_sensors%]",
+                    "priority": "[%key:component::zonal_heating::config::step::add_room::data::priority%]"
+                },
+                "data_description": {
+                    "name": "[%key:component::zonal_heating::config::step::add_room::data_description::name%]",
+                    "trv_entity": "[%key:component::zonal_heating::config::step::add_room::data_description::trv_entity%]",
+                    "window_sensors": "[%key:component::zonal_heating::config::step::add_room::data_description::window_sensors%]",
+                    "priority": "[%key:component::zonal_heating::config::step::add_room::data_description::priority%]"
+                }
+            }
+        },
+        "error": {
+            "invalid_thermostat": "Selected zone thermostat does not exist or is not a climate entity",
+            "duplicate_zone_thermostat": "This thermostat is already used in another zone",
+            "invalid_trv": "Selected TRV entity does not exist or is not a climate entity",
+            "duplicate_trv": "This TRV is already used in another room in this zone",
+            "unknown": "[%key:common::config_flow::error::unknown%]"
+        },
+        "abort": {
+            "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
+            "no_zones": "No zones configured to edit",
+            "reconfigure_successful": "Zone configuration updated successfully"
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Global Heating Settings",
+                "description": "Update global settings that apply to all zones and rooms. The integration will reload to apply changes.",
+                "data": {
+                    "temp_differential": "[%key:component::zonal_heating::config::step::settings::data::temp_differential%]",
+                    "min_cycle_time": "[%key:component::zonal_heating::config::step::settings::data::min_cycle_time%]",
+                    "window_delay": "[%key:component::zonal_heating::config::step::settings::data::window_delay%]"
+                },
+                "data_description": {
+                    "temp_differential": "[%key:component::zonal_heating::config::step::settings::data_description::temp_differential%]",
+                    "min_cycle_time": "[%key:component::zonal_heating::config::step::settings::data_description::min_cycle_time%]",
+                    "window_delay": "[%key:component::zonal_heating::config::step::settings::data_description::window_delay%]"
+                }
+            }
+        }
+    }
+}

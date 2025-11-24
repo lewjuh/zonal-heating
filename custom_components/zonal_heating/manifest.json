@@ -1,0 +1,14 @@
+{
+  "domain": "zonal_heating",
+  "name": "Zonal Heating",
+  "codeowners": [
+    "@lewjuh"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://www.home-assistant.io/integrations/zonal_heating",
+  "integration_type": "hub",
+  "iot_class": "calculated",
+  "quality_scale": "bronze",
+  "requirements": []
+}
