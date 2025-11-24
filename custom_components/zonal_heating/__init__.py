@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import (
+    CONF_AWAY_MODE_DELAY,
     CONF_AWAY_TEMPERATURE,
     CONF_MIN_CYCLE_TIME,
     CONF_PERSON_ENTITIES,
@@ -19,6 +20,7 @@ from .const import (
     CONF_WINDOW_SENSORS,
     CONF_ZONE_THERMOSTAT,
     CONF_ZONES,
+    DEFAULT_AWAY_MODE_DELAY,
     DEFAULT_AWAY_TEMPERATURE,
     DEFAULT_MIN_CYCLE_TIME,
     DEFAULT_TEMP_DIFFERENTIAL,
@@ -80,6 +82,7 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
     temp_differential = settings.get(CONF_TEMP_DIFFERENTIAL, DEFAULT_TEMP_DIFFERENTIAL)
     person_entities = settings.get(CONF_PERSON_ENTITIES, [])
     away_temperature = settings.get(CONF_AWAY_TEMPERATURE, DEFAULT_AWAY_TEMPERATURE)
+    away_mode_delay = settings.get(CONF_AWAY_MODE_DELAY, DEFAULT_AWAY_MODE_DELAY)
 
     for zone_idx, zone in enumerate(zones):
         zone_name = zone.get("name", f"Zone {zone_idx}")
@@ -122,6 +125,7 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
             min_cycle_time=min_cycle_time,
             person_entities=person_entities,
             away_temperature=away_temperature,
+            away_mode_delay=away_mode_delay,
         )
 
         await zone_sm.async_start()

@@ -37,6 +37,7 @@ class ZoneStateMachine:
         min_cycle_time: int = 5,
         person_entities: list[str] | None = None,
         away_temperature: float = 16.0,
+        away_mode_delay: int = 10,
     ) -> None:
         """Initialize zone state machine."""
         self.hass = hass
@@ -46,16 +47,21 @@ class ZoneStateMachine:
         self.min_cycle_time = min_cycle_time
         self.person_entities = person_entities or []
         self.away_temperature = away_temperature
+        self.away_mode_delay = away_mode_delay
 
         # State tracking
         self._zone_is_on = False
         self._last_zone_change: datetime | None = None
         self._zone_current_temp: float | None = None
         self._away_mode = False
+        self._away_mode_pending = False
         self._people_home_count = 0
 
         # Retry timer for min_cycle_time blocking
         self._retry_timer: asyncio.TimerHandle | None = None
+
+        # Away mode delay timer
+        self._away_mode_timer: asyncio.TimerHandle | None = None
 
         # Listeners
         self._remove_listeners: list[Callable] = []
@@ -118,6 +124,11 @@ class ZoneStateMachine:
             self._retry_timer.cancel()
             self._retry_timer = None
 
+        # Cancel any pending away mode timer
+        if self._away_mode_timer:
+            self._away_mode_timer.cancel()
+            self._away_mode_timer = None
+
         for room in self.rooms:
             await room.async_stop()
 
@@ -152,16 +163,31 @@ class ZoneStateMachine:
             self._update_person_states()
 
             if old_away_mode != self._away_mode:
-                _LOGGER.info(
-                    "%s: 🏠 Away mode changed: %s → %s (People home: %d/%d)",
-                    self.zone_name,
-                    "AWAY" if old_away_mode else "HOME",
-                    "AWAY" if self._away_mode else "HOME",
-                    self._people_home_count,
-                    len(self.person_entities),
-                )
-                # Trigger immediate zone evaluation when away mode changes
-                self.hass.async_create_task(self._async_evaluate_zone())
+                # Away mode state changed
+                if self._away_mode:
+                    # Everyone left - start delay timer
+                    self._start_away_mode_delay_timer()
+                else:
+                    # Someone came home - cancel delay timer if pending
+                    if self._away_mode_timer:
+                        self._away_mode_timer.cancel()
+                        self._away_mode_timer = None
+                        self._away_mode_pending = False
+                        _LOGGER.info(
+                            "%s: 🏠 Away mode cancelled - someone returned home (People home: %d/%d)",
+                            self.zone_name,
+                            self._people_home_count,
+                            len(self.person_entities),
+                        )
+                    else:
+                        _LOGGER.info(
+                            "%s: 🏠 Away mode ended - people returned home (People home: %d/%d)",
+                            self.zone_name,
+                            self._people_home_count,
+                            len(self.person_entities),
+                        )
+                    # Trigger zone evaluation to resume normal operation
+                    self.hass.async_create_task(self._async_evaluate_zone())
 
     async def _async_update_zone_climate_state(self) -> None:
         """Update zone climate state from entity."""
@@ -199,6 +225,49 @@ class ZoneStateMachine:
         """Return number of people currently home."""
         return self._people_home_count
 
+    def _start_away_mode_delay_timer(self) -> None:
+        """Start delay timer before activating away mode."""
+        if self._away_mode_timer:
+            self._away_mode_timer.cancel()
+
+        self._away_mode_pending = True
+
+        _LOGGER.info(
+            "%s: 🏠 Everyone left - will activate away mode in %d minutes",
+            self.zone_name,
+            self.away_mode_delay,
+        )
+
+        # Convert minutes to seconds
+        delay_seconds = self.away_mode_delay * 60
+
+        self._away_mode_timer = self.hass.loop.call_later(
+            delay_seconds,
+            lambda: self.hass.async_create_task(self._async_away_mode_delay_expired()),
+        )
+
+    async def _async_away_mode_delay_expired(self) -> None:
+        """Handle away mode delay expiration - confirm still away and activate."""
+        self._away_mode_timer = None
+        self._away_mode_pending = False
+
+        # Confirm people are still away
+        if not self._away_mode:
+            _LOGGER.info(
+                "%s: 🏠 Away mode delay expired but people are home, ignoring",
+                self.zone_name,
+            )
+            return
+
+        _LOGGER.info(
+            "%s: 🏠 Away mode delay expired - activating away mode after %d minute delay",
+            self.zone_name,
+            self.away_mode_delay,
+        )
+
+        # Trigger zone evaluation which will activate away mode
+        await self._async_evaluate_zone()
+
     async def _async_evaluate_zone(self) -> None:
         """Evaluate zone state based on room states."""
         # Cancel any pending retry timer since we're evaluating now
@@ -210,8 +279,36 @@ class ZoneStateMachine:
         _LOGGER.info("%s: ZONE EVALUATION STARTED", self.zone_name)
         _LOGGER.info("=" * 60)
 
-        # Check if away mode is active
-        if self._away_mode and self.person_entities:
+        # Check if away mode is pending (timer running)
+        if self._away_mode_pending:
+            _LOGGER.info(
+                "%s: 🏠 Away mode pending - waiting %d min delay (timer active)",
+                self.zone_name,
+                self.away_mode_delay,
+            )
+            # Don't enter away mode yet, let timer expire first
+            # But still turn off zone to save energy
+            if self._zone_is_on:
+                zone_state = self.hass.states.get(self.zone_climate)
+                if zone_state and zone_state.state == HVACMode.HEAT:
+                    _LOGGER.info(
+                        "%s: Turning zone OFF while waiting for away mode activation",
+                        self.zone_name,
+                    )
+                    await self.hass.services.async_call(
+                        CLIMATE_DOMAIN,
+                        SERVICE_SET_HVAC_MODE,
+                        {
+                            ATTR_ENTITY_ID: self.zone_climate,
+                            "hvac_mode": HVACMode.OFF,
+                        },
+                        blocking=True,
+                    )
+                    self._zone_is_on = False
+            return
+
+        # Check if away mode is confirmed active (after delay)
+        if self._away_mode and self.person_entities and not self._away_mode_timer:
             _LOGGER.info(
                 "%s: 🏠 AWAY MODE ACTIVE - All people away, entering low power mode",
                 self.zone_name,

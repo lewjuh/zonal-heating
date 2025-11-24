@@ -17,6 +17,7 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_AWAY_MODE_DELAY,
     CONF_AWAY_TEMPERATURE,
     CONF_MIN_CYCLE_TIME,
     CONF_PERSON_ENTITIES,
@@ -30,6 +31,7 @@ from .const import (
     CONF_ZONE_NAME,
     CONF_ZONE_THERMOSTAT,
     CONF_ZONES,
+    DEFAULT_AWAY_MODE_DELAY,
     DEFAULT_AWAY_TEMPERATURE,
     DEFAULT_MIN_CYCLE_TIME,
     DEFAULT_PRIORITY,
@@ -228,6 +230,7 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_WINDOW_DELAY: user_input[CONF_WINDOW_DELAY],
                     CONF_PERSON_ENTITIES: user_input.get(CONF_PERSON_ENTITIES, []),
                     CONF_AWAY_TEMPERATURE: user_input[CONF_AWAY_TEMPERATURE],
+                    CONF_AWAY_MODE_DELAY: user_input[CONF_AWAY_MODE_DELAY],
                 },
             }
 
@@ -262,6 +265,10 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_AWAY_TEMPERATURE,
                         default=DEFAULT_AWAY_TEMPERATURE,
                     ): vol.All(vol.Coerce(float), vol.Range(min=5.0, max=25.0)),
+                    vol.Optional(
+                        CONF_AWAY_MODE_DELAY,
+                        default=DEFAULT_AWAY_MODE_DELAY,
+                    ): vol.All(vol.Coerce(int), vol.Range(min=0, max=120)),
                 }
             ),
         )
@@ -545,6 +552,7 @@ class ZonalHeatingOptionsFlow(config_entries.OptionsFlow):
                     CONF_WINDOW_DELAY: user_input[CONF_WINDOW_DELAY],
                     CONF_PERSON_ENTITIES: user_input.get(CONF_PERSON_ENTITIES, []),
                     CONF_AWAY_TEMPERATURE: user_input[CONF_AWAY_TEMPERATURE],
+                    CONF_AWAY_MODE_DELAY: user_input[CONF_AWAY_MODE_DELAY],
                 },
             )
 
@@ -592,6 +600,12 @@ class ZonalHeatingOptionsFlow(config_entries.OptionsFlow):
                             CONF_AWAY_TEMPERATURE, DEFAULT_AWAY_TEMPERATURE
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=5.0, max=25.0)),
+                    vol.Optional(
+                        CONF_AWAY_MODE_DELAY,
+                        default=current_settings.get(
+                            CONF_AWAY_MODE_DELAY, DEFAULT_AWAY_MODE_DELAY
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=0, max=120)),
                 }
             ),
         )
