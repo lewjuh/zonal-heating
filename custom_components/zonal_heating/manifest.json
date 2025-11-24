@@ -1,14 +1,14 @@
 {
   "domain": "zonal_heating",
   "name": "Zonal Heating",
-  "codeowners": [
-    "@lewjuh"
-  ],
+  "codeowners": ["@lewjuh"],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://www.home-assistant.io/integrations/zonal_heating",
+  "documentation": "https://github.com/lewjuh/zonal-heating",
   "integration_type": "hub",
   "iot_class": "calculated",
   "quality_scale": "bronze",
-  "requirements": []
+  "requirements": [],
+  "issue_tracker": "https://github.com/lewjuh/zonal-heating/issues",
+  "version": "1.0.0"
 }
