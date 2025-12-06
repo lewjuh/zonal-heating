@@ -20,6 +20,7 @@ from .const import (
     CONF_AWAY_MODE_DELAY,
     CONF_AWAY_TEMPERATURE,
     CONF_MIN_CYCLE_TIME,
+    CONF_OVERHEAT_THRESHOLD,
     CONF_PERSON_ENTITIES,
     CONF_PRIORITY,
     CONF_ROOMS,
@@ -34,6 +35,7 @@ from .const import (
     DEFAULT_AWAY_MODE_DELAY,
     DEFAULT_AWAY_TEMPERATURE,
     DEFAULT_MIN_CYCLE_TIME,
+    DEFAULT_OVERHEAT_THRESHOLD,
     DEFAULT_PRIORITY,
     DEFAULT_TEMP_DIFFERENTIAL,
     DEFAULT_WINDOW_DELAY,
@@ -226,6 +228,7 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_ZONES: self._zones,
                 CONF_SETTINGS: {
                     CONF_TEMP_DIFFERENTIAL: user_input[CONF_TEMP_DIFFERENTIAL],
+                    CONF_OVERHEAT_THRESHOLD: user_input[CONF_OVERHEAT_THRESHOLD],
                     CONF_MIN_CYCLE_TIME: user_input[CONF_MIN_CYCLE_TIME],
                     CONF_WINDOW_DELAY: user_input[CONF_WINDOW_DELAY],
                     CONF_PERSON_ENTITIES: user_input.get(CONF_PERSON_ENTITIES, []),
@@ -247,6 +250,10 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_TEMP_DIFFERENTIAL,
                         default=DEFAULT_TEMP_DIFFERENTIAL,
                     ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=5.0)),
+                    vol.Optional(
+                        CONF_OVERHEAT_THRESHOLD,
+                        default=DEFAULT_OVERHEAT_THRESHOLD,
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0.5, max=5.0)),
                     vol.Optional(
                         CONF_MIN_CYCLE_TIME,
                         default=DEFAULT_MIN_CYCLE_TIME,
@@ -548,6 +555,7 @@ class ZonalHeatingOptionsFlow(config_entries.OptionsFlow):
                 title="",
                 data={
                     CONF_TEMP_DIFFERENTIAL: user_input[CONF_TEMP_DIFFERENTIAL],
+                    CONF_OVERHEAT_THRESHOLD: user_input[CONF_OVERHEAT_THRESHOLD],
                     CONF_MIN_CYCLE_TIME: user_input[CONF_MIN_CYCLE_TIME],
                     CONF_WINDOW_DELAY: user_input[CONF_WINDOW_DELAY],
                     CONF_PERSON_ENTITIES: user_input.get(CONF_PERSON_ENTITIES, []),
@@ -573,6 +581,12 @@ class ZonalHeatingOptionsFlow(config_entries.OptionsFlow):
                             CONF_TEMP_DIFFERENTIAL, DEFAULT_TEMP_DIFFERENTIAL
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=5.0)),
+                    vol.Optional(
+                        CONF_OVERHEAT_THRESHOLD,
+                        default=current_settings.get(
+                            CONF_OVERHEAT_THRESHOLD, DEFAULT_OVERHEAT_THRESHOLD
+                        ),
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0.5, max=5.0)),
                     vol.Optional(
                         CONF_MIN_CYCLE_TIME,
                         default=current_settings.get(

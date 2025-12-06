@@ -99,14 +99,22 @@
             },
             "settings": {
                 "data": {
+                    "temp_differential": "Temperature Differential (°C)",
+                    "overheat_threshold": "Overheat Threshold (°C)",
                     "min_cycle_time": "Minimum Cycle Time (minutes)",
-                    "temp_differential": "Temperature Differential (\u00b0C)",
-                    "window_delay": "Window Open Delay (seconds)"
+                    "window_delay": "Window Open Delay (seconds)",
+                    "person_entities": "Person Entities (Optional)",
+                    "away_temperature": "Away Mode Temperature (°C)",
+                    "away_mode_delay": "Away Mode Delay (minutes)"
                 },
                 "data_description": {
+                    "temp_differential": "How far below target temperature before requesting heat (e.g., 0.5°C means heat when 0.5° below target)",
+                    "overheat_threshold": "How far above target temperature before TRV turns off (e.g., 1.0°C means turn off when 1° above target)",
                     "min_cycle_time": "Minimum time between zone thermostat on/off changes to prevent rapid cycling",
-                    "temp_differential": "How far below target temperature before requesting heat (e.g., 0.5\u00b0C means heat when 0.5\u00b0 below target)",
-                    "window_delay": "Wait time after window opens before pausing heating (prevents false triggers)"
+                    "window_delay": "Wait time after window opens before pausing heating (prevents false triggers)",
+                    "person_entities": "People to track for away mode - when all are away, heating enters low power mode",
+                    "away_temperature": "Temperature to set all TRVs to when everyone is away (default: 16°C)",
+                    "away_mode_delay": "Wait time after everyone leaves before activating away mode - cancels if anyone returns (default: 10 minutes)"
                 },
                 "description": "Configure global settings that apply to all zones and rooms.",
                 "title": "Global Heating Settings"
@@ -131,14 +139,22 @@
         "step": {
             "init": {
                 "data": {
+                    "temp_differential": "Temperature Differential (°C)",
+                    "overheat_threshold": "Overheat Threshold (°C)",
                     "min_cycle_time": "Minimum Cycle Time (minutes)",
-                    "temp_differential": "Temperature Differential (\u00b0C)",
-                    "window_delay": "Window Open Delay (seconds)"
+                    "window_delay": "Window Open Delay (seconds)",
+                    "person_entities": "Person Entities (Optional)",
+                    "away_temperature": "Away Mode Temperature (°C)",
+                    "away_mode_delay": "Away Mode Delay (minutes)"
                 },
                 "data_description": {
+                    "temp_differential": "How far below target temperature before requesting heat (e.g., 0.5°C means heat when 0.5° below target)",
+                    "overheat_threshold": "How far above target temperature before TRV turns off (e.g., 1.0°C means turn off when 1° above target)",
                     "min_cycle_time": "Minimum time between zone thermostat on/off changes to prevent rapid cycling",
-                    "temp_differential": "How far below target temperature before requesting heat (e.g., 0.5\u00b0C means heat when 0.5\u00b0 below target)",
-                    "window_delay": "Wait time after window opens before pausing heating (prevents false triggers)"
+                    "window_delay": "Wait time after window opens before pausing heating (prevents false triggers)",
+                    "person_entities": "People to track for away mode - when all are away, heating enters low power mode",
+                    "away_temperature": "Temperature to set all TRVs to when everyone is away (default: 16°C)",
+                    "away_mode_delay": "Wait time after everyone leaves before activating away mode - cancels if anyone returns (default: 10 minutes)"
                 },
                 "description": "Update global settings that apply to all zones and rooms. The integration will reload to apply changes.",
                 "title": "Global Heating Settings"

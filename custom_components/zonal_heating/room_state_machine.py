@@ -28,6 +28,7 @@ class RoomStateMachine:
         window_sensors: list[str],
         window_delay: int = 30,
         temp_differential: float = 0.5,
+        overheat_threshold: float = 1.0,
     ) -> None:
         """Initialize room state machine."""
         self.hass = hass
@@ -36,6 +37,7 @@ class RoomStateMachine:
         self.window_sensors = window_sensors
         self.window_delay = window_delay
         self.temp_differential = temp_differential
+        self.overheat_threshold = overheat_threshold
 
         # State tracking
         self._window_open = False
@@ -44,6 +46,7 @@ class RoomStateMachine:
         self._current_temp: float | None = None
         self._target_temp: float | None = None
         self._is_on = False
+        self._overheated = False
 
         # Listeners
         self._remove_listeners: list[Callable] = []
@@ -169,6 +172,7 @@ class RoomStateMachine:
         old_current = self._current_temp
         old_target = self._target_temp
         old_is_on = self._is_on
+        old_overheated = self._overheated
 
         # Calculate old heating need before updating
         old_needs_heat = self.needs_heat
@@ -214,6 +218,9 @@ class RoomStateMachine:
                 "NEEDS HEAT" if old_needs_heat else "NO HEAT",
                 "NEEDS HEAT" if new_needs_heat else "NO HEAT",
             )
+
+        # Check for overheating and turn off TRV if needed
+        await self._async_check_overheat(old_overheated)
 
     @property
     def needs_heat(self) -> bool:
@@ -284,3 +291,45 @@ class RoomStateMachine:
     def is_on(self) -> bool:
         """Return True if climate is on."""
         return self._is_on
+
+    @property
+    def overheated(self) -> bool:
+        """Return True if room is overheated."""
+        return self._overheated
+
+    async def _async_check_overheat(self, was_overheated: bool) -> None:
+        """Check if room is overheating and turn off TRV if needed."""
+        if self._current_temp is None or self._target_temp is None:
+            self._overheated = False
+            return
+
+        overheat_limit = self._target_temp + self.overheat_threshold
+        is_overheating = self._current_temp >= overheat_limit
+
+        if is_overheating and self._is_on:
+            self._overheated = True
+
+            if not was_overheated:
+                _LOGGER.info(
+                    "%s: 🌡️ OVERHEAT - Current: %.1f°C >= Limit: %.1f°C (Target: %.1f°C + %.1f°C), turning off TRV",
+                    self.room_name,
+                    self._current_temp,
+                    overheat_limit,
+                    self._target_temp,
+                    self.overheat_threshold,
+                )
+
+                await self.hass.services.async_call(
+                    CLIMATE_DOMAIN,
+                    SERVICE_TURN_OFF,
+                    {ATTR_ENTITY_ID: self.climate_entity},
+                    blocking=True,
+                )
+        elif not is_overheating and was_overheated:
+            self._overheated = False
+            _LOGGER.info(
+                "%s: Temperature dropped below overheat limit (%.1f°C < %.1f°C)",
+                self.room_name,
+                self._current_temp,
+                overheat_limit,
+            )

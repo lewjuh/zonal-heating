@@ -11,6 +11,7 @@ from .const import (
     CONF_AWAY_MODE_DELAY,
     CONF_AWAY_TEMPERATURE,
     CONF_MIN_CYCLE_TIME,
+    CONF_OVERHEAT_THRESHOLD,
     CONF_PERSON_ENTITIES,
     CONF_ROOMS,
     CONF_SETTINGS,
@@ -23,6 +24,7 @@ from .const import (
     DEFAULT_AWAY_MODE_DELAY,
     DEFAULT_AWAY_TEMPERATURE,
     DEFAULT_MIN_CYCLE_TIME,
+    DEFAULT_OVERHEAT_THRESHOLD,
     DEFAULT_TEMP_DIFFERENTIAL,
     DEFAULT_WINDOW_DELAY,
     DOMAIN,
@@ -80,6 +82,7 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
     window_delay = settings.get(CONF_WINDOW_DELAY, DEFAULT_WINDOW_DELAY)
     min_cycle_time = settings.get(CONF_MIN_CYCLE_TIME, DEFAULT_MIN_CYCLE_TIME)
     temp_differential = settings.get(CONF_TEMP_DIFFERENTIAL, DEFAULT_TEMP_DIFFERENTIAL)
+    overheat_threshold = settings.get(CONF_OVERHEAT_THRESHOLD, DEFAULT_OVERHEAT_THRESHOLD)
     person_entities = settings.get(CONF_PERSON_ENTITIES, [])
     away_temperature = settings.get(CONF_AWAY_TEMPERATURE, DEFAULT_AWAY_TEMPERATURE)
     away_mode_delay = settings.get(CONF_AWAY_MODE_DELAY, DEFAULT_AWAY_MODE_DELAY)
@@ -106,6 +109,7 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
                 window_sensors=window_sensors,
                 window_delay=window_delay,
                 temp_differential=temp_differential,
+                overheat_threshold=overheat_threshold,
             )
             room_state_machines.append(room_sm)
 

@@ -25,6 +25,7 @@ CONF_WINDOW_DELAY = "window_delay"
 CONF_PERSON_ENTITIES = "person_entities"
 CONF_AWAY_TEMPERATURE = "away_temperature"
 CONF_AWAY_MODE_DELAY = "away_mode_delay"
+CONF_OVERHEAT_THRESHOLD = "overheat_threshold"
 
 # Default values
 DEFAULT_TEMP_DIFFERENTIAL = 0.5  # °C below target to trigger heat
@@ -33,6 +34,7 @@ DEFAULT_WINDOW_DELAY = 30  # Seconds to wait after window opens
 DEFAULT_PRIORITY = 5  # Default room priority (1-10 scale)
 DEFAULT_AWAY_TEMPERATURE = 16.0  # °C temperature when all away
 DEFAULT_AWAY_MODE_DELAY = 10  # Minutes to wait before activating away mode
+DEFAULT_OVERHEAT_THRESHOLD = 1.0  # °C above target to turn off TRV
 
 # Update intervals
 UPDATE_INTERVAL_ZONE_EVAL = 30  # Seconds between zone evaluations
@@ -53,3 +55,4 @@ ATTR_HEAT_REQUESTING = "heat_requesting"
 ATTR_PRIORITY = "priority"
 ATTR_AWAY_MODE = "away_mode"
 ATTR_PEOPLE_HOME = "people_home"
+ATTR_OVERHEATED = "overheated"

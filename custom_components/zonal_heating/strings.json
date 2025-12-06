@@ -44,6 +44,7 @@
                 "description": "Configure global settings that apply to all zones and rooms.",
                 "data": {
                     "temp_differential": "Temperature Differential (°C)",
+                    "overheat_threshold": "Overheat Threshold (°C)",
                     "min_cycle_time": "Minimum Cycle Time (minutes)",
                     "window_delay": "Window Open Delay (seconds)",
                     "person_entities": "Person Entities (Optional)",
@@ -52,6 +53,7 @@
                 },
                 "data_description": {
                     "temp_differential": "How far below target temperature before requesting heat (e.g., 0.5°C means heat when 0.5° below target)",
+                    "overheat_threshold": "How far above target temperature before TRV turns off (e.g., 1.0°C means turn off when 1° above target)",
                     "min_cycle_time": "Minimum time between zone thermostat on/off changes to prevent rapid cycling",
                     "window_delay": "Wait time after window opens before pausing heating (prevents false triggers)",
                     "person_entities": "People to track for away mode - when all are away, heating enters low power mode",
@@ -136,6 +138,7 @@
                 "description": "Update global settings that apply to all zones and rooms. The integration will reload to apply changes.",
                 "data": {
                     "temp_differential": "[%key:component::zonal_heating::config::step::settings::data::temp_differential%]",
+                    "overheat_threshold": "[%key:component::zonal_heating::config::step::settings::data::overheat_threshold%]",
                     "min_cycle_time": "[%key:component::zonal_heating::config::step::settings::data::min_cycle_time%]",
                     "window_delay": "[%key:component::zonal_heating::config::step::settings::data::window_delay%]",
                     "person_entities": "[%key:component::zonal_heating::config::step::settings::data::person_entities%]",
@@ -144,6 +147,7 @@
                 },
                 "data_description": {
                     "temp_differential": "[%key:component::zonal_heating::config::step::settings::data_description::temp_differential%]",
+                    "overheat_threshold": "[%key:component::zonal_heating::config::step::settings::data_description::overheat_threshold%]",
                     "min_cycle_time": "[%key:component::zonal_heating::config::step::settings::data_description::min_cycle_time%]",
                     "window_delay": "[%key:component::zonal_heating::config::step::settings::data_description::window_delay%]",
                     "person_entities": "[%key:component::zonal_heating::config::step::settings::data_description::person_entities%]",
