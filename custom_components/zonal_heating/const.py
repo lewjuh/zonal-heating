@@ -5,7 +5,7 @@ from homeassistant.const import Platform
 DOMAIN = "zonal_heating"
 
 # Platforms
-PLATFORMS = [Platform.CLIMATE]
+PLATFORMS = [Platform.CLIMATE, Platform.SENSOR]
 
 # Config entry data keys
 CONF_ZONES = "zones"

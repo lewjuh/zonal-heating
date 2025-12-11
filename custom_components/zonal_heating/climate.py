@@ -287,9 +287,17 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         """Return extra state attributes."""
         # Get zone state machine for away mode info
         zone_coordinator = None
+        room_state_machine = None
         if DOMAIN in self.hass.data and self._entry_id in self.hass.data[DOMAIN]:
             coordinators = self.hass.data[DOMAIN][self._entry_id].get("coordinators", {})
             zone_coordinator = coordinators.get(self._zone_name)
+
+            # Find our room state machine
+            if zone_coordinator:
+                for room in zone_coordinator.rooms:
+                    if room.climate_entity == self._trv_entity:
+                        room_state_machine = room
+                        break
 
         attrs = {
             ATTR_ZONE_ACTIVE: self._zone_active,
@@ -300,35 +308,90 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             "trv_entity": self._trv_entity,
         }
 
+        # Add room state machine data for debugging
+        if room_state_machine:
+            attrs["sm_needs_heat"] = room_state_machine.needs_heat
+            attrs["sm_temperature_deficit"] = round(room_state_machine.temperature_deficit, 2)
+            attrs["sm_window_confirmed"] = room_state_machine._window_open_confirmed
+            attrs["sm_overheated"] = room_state_machine._overheated
+            attrs["sm_is_on"] = room_state_machine._is_on
+
+            # Add threshold calculations
+            if room_state_machine._target_temp is not None:
+                attrs["heat_threshold"] = round(
+                    room_state_machine._target_temp - room_state_machine.temp_differential, 1
+                )
+                attrs["overheat_limit"] = round(
+                    room_state_machine._target_temp + room_state_machine.overheat_threshold, 1
+                )
+
         # Add away mode info if zone coordinator available
         if zone_coordinator:
             attrs[ATTR_AWAY_MODE] = zone_coordinator.away_mode
             if zone_coordinator.person_entities:
                 attrs[ATTR_PEOPLE_HOME] = zone_coordinator.people_home_count
 
-        # Determine why active/inactive
-        if zone_coordinator and zone_coordinator.away_mode:
-            attrs["why_inactive"] = "Away mode - low power"
-        elif self.hvac_action == HVACAction.HEATING:
-            attrs["why_active"] = "Heating to target temperature"
-        elif self.hvac_action == HVACAction.IDLE and self._heat_requesting:
-            attrs["why_inactive"] = "Waiting for zone to activate"
-        elif self._attr_hvac_mode == HVACMode.OFF:
-            attrs["why_inactive"] = "Climate turned off"
-        elif self._window_open:
-            attrs["why_inactive"] = "Window open"
-        elif (
-            self._attr_current_temperature is not None
-            and self._attr_target_temperature is not None
-            and self._attr_current_temperature >= self._attr_target_temperature
-        ):
-            attrs["why_inactive"] = "Target temperature reached"
-        elif not self._zone_active:
-            attrs["why_inactive"] = "Zone not active"
+            # Add zone-level debug info
+            attrs["zone_cycle_blocking"] = (
+                zone_coordinator._last_zone_change is not None
+                and zone_coordinator._retry_timer is not None
+            )
+
+        # Determine why active/inactive with detailed reason
+        reason = self._build_reason(zone_coordinator, room_state_machine)
+        if "active" in reason.lower() or "heating" in reason.lower():
+            attrs["status_reason"] = reason
         else:
-            attrs["why_inactive"] = "Idle"
+            attrs["status_reason"] = reason
 
         return attrs
+
+    def _build_reason(self, zone_coordinator, room_sm) -> str:
+        """Build detailed reason for current state."""
+        # Check away mode
+        if zone_coordinator and zone_coordinator.away_mode and not zone_coordinator._away_mode_timer:
+            return "Away mode active - low power"
+
+        if zone_coordinator and zone_coordinator._away_mode_pending:
+            return f"Away mode pending ({zone_coordinator.away_mode_delay}min delay)"
+
+        # Check room state machine conditions
+        if room_sm:
+            if room_sm._overheated:
+                return f"Overheated - TRV turned off (temp >= {room_sm._target_temp + room_sm.overheat_threshold:.1f}C)"
+
+            if room_sm._window_open_confirmed:
+                return "Window confirmed open - TRV turned off"
+
+            if room_sm._window_open and room_sm._window_timer:
+                return f"Window detected - waiting {room_sm.window_delay}s to confirm"
+
+        # Check HVAC mode
+        if self._attr_hvac_mode == HVACMode.OFF:
+            return "Climate entity turned off"
+
+        # Check temperature
+        if room_sm and room_sm.needs_heat:
+            if self._zone_active:
+                return f"Heating - deficit {room_sm.temperature_deficit:.1f}C"
+            else:
+                # Zone not active but room needs heat
+                if zone_coordinator and zone_coordinator._retry_timer:
+                    return "Needs heat but zone blocked by min_cycle_time"
+                return "Needs heat - waiting for zone to activate"
+
+        # Temperature satisfied
+        if (
+            self._attr_current_temperature is not None
+            and self._attr_target_temperature is not None
+        ):
+            if self._attr_current_temperature >= self._attr_target_temperature:
+                return f"Target reached ({self._attr_current_temperature:.1f}C >= {self._attr_target_temperature:.1f}C)"
+
+        if not self._zone_active:
+            return "Zone not active - no rooms need heat"
+
+        return "Idle"
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
