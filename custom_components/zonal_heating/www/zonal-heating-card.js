@@ -55,40 +55,41 @@ class ZonalHeatingCard extends LitElement {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 16px;
+        margin-bottom: 12px;
       }
       .title {
-        font-size: 1.2em;
+        font-size: 1.1em;
         font-weight: 500;
       }
       .zone-status {
         display: flex;
         align-items: center;
-        gap: 8px;
-        padding: 12px;
+        gap: 10px;
+        padding: 10px 12px;
         border-radius: 8px;
-        margin-bottom: 16px;
+        margin-bottom: 12px;
       }
       .zone-status.heating {
-        background-color: rgba(255, 152, 0, 0.2);
+        background-color: rgba(255, 152, 0, 0.15);
         border: 1px solid var(--warning-color, #ff9800);
       }
       .zone-status.idle {
-        background-color: rgba(76, 175, 80, 0.2);
+        background-color: rgba(76, 175, 80, 0.15);
         border: 1px solid var(--success-color, #4caf50);
       }
       .zone-status.away_mode,
       .zone-status.away_pending {
-        background-color: rgba(33, 150, 243, 0.2);
+        background-color: rgba(33, 150, 243, 0.15);
         border: 1px solid var(--info-color, #2196f3);
       }
       .zone-status.unavailable {
-        background-color: rgba(158, 158, 158, 0.2);
+        background-color: rgba(158, 158, 158, 0.15);
         border: 1px solid var(--disabled-color, #9e9e9e);
       }
       .status-icon {
-        width: 24px;
-        height: 24px;
+        --mdc-icon-size: 20px;
+        width: 20px;
+        height: 20px;
       }
       .status-icon.heating {
         color: var(--warning-color, #ff9800);
@@ -102,27 +103,58 @@ class ZonalHeatingCard extends LitElement {
       }
       .zone-info {
         flex: 1;
+        min-width: 0;
       }
       .zone-state {
+        font-size: 0.95em;
         font-weight: 500;
         text-transform: capitalize;
       }
       .zone-reason {
-        font-size: 0.85em;
+        font-size: 0.8em;
         color: var(--secondary-text-color);
+        margin-top: 2px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .zone-temp {
+        font-size: 1.1em;
+        font-weight: 500;
+        white-space: nowrap;
+      }
+      .zone-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
         margin-top: 4px;
+      }
+      .people-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        font-size: 0.75em;
+        color: var(--secondary-text-color);
+        background-color: var(--divider-color);
+        padding: 2px 6px;
+        border-radius: 10px;
+      }
+      .people-badge ha-icon {
+        --mdc-icon-size: 12px;
+        width: 12px;
+        height: 12px;
       }
       .rooms-container {
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 6px;
       }
       .room-card {
         display: flex;
         align-items: center;
-        padding: 12px;
+        padding: 8px 10px;
         background-color: var(--card-background-color);
-        border-radius: 8px;
+        border-radius: 6px;
         border: 1px solid var(--divider-color);
       }
       .room-card.needs-heat {
@@ -142,13 +174,19 @@ class ZonalHeatingCard extends LitElement {
         opacity: 0.7;
       }
       .room-icon {
-        width: 40px;
-        height: 40px;
+        width: 28px;
+        height: 28px;
         display: flex;
         align-items: center;
         justify-content: center;
         border-radius: 50%;
-        margin-right: 12px;
+        margin-right: 10px;
+        flex-shrink: 0;
+      }
+      .room-icon ha-icon {
+        --mdc-icon-size: 16px;
+        width: 16px;
+        height: 16px;
       }
       .room-icon.needs-heat {
         background-color: rgba(255, 152, 0, 0.2);
@@ -175,6 +213,7 @@ class ZonalHeatingCard extends LitElement {
         min-width: 0;
       }
       .room-name {
+        font-size: 0.9em;
         font-weight: 500;
         white-space: nowrap;
         overflow: hidden;
@@ -183,49 +222,57 @@ class ZonalHeatingCard extends LitElement {
       .room-temps {
         display: flex;
         align-items: center;
-        gap: 8px;
-        font-size: 0.9em;
+        gap: 4px;
+        font-size: 0.8em;
         color: var(--secondary-text-color);
-        margin-top: 2px;
+        margin-top: 1px;
+      }
+      .room-temps ha-icon {
+        --mdc-icon-size: 12px;
+        width: 12px;
+        height: 12px;
+        opacity: 0.6;
       }
       .current-temp {
         font-weight: 500;
         color: var(--primary-text-color);
       }
+      .temp-deficit {
+        color: var(--warning-color);
+        font-size: 0.9em;
+      }
       .room-reason {
-        font-size: 0.8em;
+        font-size: 0.75em;
         color: var(--secondary-text-color);
-        margin-top: 4px;
+        margin-top: 2px;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      .room-actions {
-        display: flex;
-        gap: 4px;
-      }
       .debug-toggle {
         cursor: pointer;
-        padding: 4px 8px;
+        padding: 3px 8px;
         border-radius: 4px;
-        font-size: 0.8em;
+        font-size: 0.75em;
         background-color: var(--divider-color);
+        transition: background-color 0.2s;
       }
       .debug-toggle:hover {
         background-color: var(--secondary-background-color);
       }
       .debug-section {
-        margin-top: 16px;
-        padding: 12px;
+        margin-top: 12px;
+        padding: 10px;
         background-color: var(--secondary-background-color);
-        border-radius: 8px;
+        border-radius: 6px;
         font-family: monospace;
-        font-size: 0.75em;
+        font-size: 0.7em;
       }
       .debug-title {
         font-weight: 600;
-        margin-bottom: 8px;
+        margin-bottom: 6px;
         color: var(--primary-text-color);
+        font-size: 1.1em;
       }
       .debug-item {
         display: flex;
@@ -249,17 +296,10 @@ class ZonalHeatingCard extends LitElement {
       .debug-value.false {
         color: var(--error-color, #f44336);
       }
-      .people-badge {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        font-size: 0.85em;
-        color: var(--secondary-text-color);
-      }
       .divider {
         height: 1px;
         background-color: var(--divider-color);
-        margin: 12px 0;
+        margin: 10px 0;
       }
     `;
   }
@@ -331,15 +371,17 @@ class ZonalHeatingCard extends LitElement {
           <div class="zone-reason">${attrs.reason || ""}</div>
           ${attrs.people_tracked > 0
             ? html`
-                <div class="people-badge">
-                  <ha-icon icon="mdi:account-group" style="width: 16px; height: 16px;"></ha-icon>
-                  ${attrs.people_home || 0} / ${attrs.people_tracked} home
+                <div class="zone-meta">
+                  <span class="people-badge">
+                    <ha-icon icon="mdi:account-group"></ha-icon>
+                    ${attrs.people_home || 0}/${attrs.people_tracked}
+                  </span>
                 </div>
               `
             : ""}
         </div>
         ${attrs.zone_current_temp
-          ? html`<span style="font-size: 1.2em; font-weight: 500;">${attrs.zone_current_temp.toFixed(1)}°C</span>`
+          ? html`<span class="zone-temp">${attrs.zone_current_temp.toFixed(1)}°C</span>`
           : ""}
       </div>
     `;
@@ -394,9 +436,9 @@ class ZonalHeatingCard extends LitElement {
           <div class="room-name">${room.name}</div>
           <div class="room-temps">
             <span class="current-temp">${currentTemp}°C</span>
-            <ha-icon icon="mdi:arrow-right" style="width: 16px; height: 16px;"></ha-icon>
+            <ha-icon icon="mdi:arrow-right"></ha-icon>
             <span>${targetTemp}°C</span>
-            ${room.deficit > 0 ? html`<span style="color: var(--warning-color);">(${room.deficit.toFixed(1)}° deficit)</span>` : ""}
+            ${room.deficit > 0 ? html`<span class="temp-deficit">(−${room.deficit.toFixed(1)}°)</span>` : ""}
           </div>
           <div class="room-reason">${this._getRoomReason(room)}</div>
         </div>
@@ -437,7 +479,7 @@ class ZonalHeatingCard extends LitElement {
           <div class="room-name">${sensor.attributes.friendly_name || sensor.entity_id}</div>
           <div class="room-temps">
             <span class="current-temp">${currentTemp}°C</span>
-            <ha-icon icon="mdi:arrow-right" style="width: 16px; height: 16px;"></ha-icon>
+            <ha-icon icon="mdi:arrow-right"></ha-icon>
             <span>${targetTemp}°C</span>
           </div>
           <div class="room-reason">${attrs.reason || ""}</div>
@@ -605,7 +647,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c ZONAL-HEATING-CARD %c v1.0.0 ",
+  "%c ZONAL-HEATING-CARD %c v1.1.0 ",
   "color: white; background: #ff9800; font-weight: bold;",
   "color: #ff9800; background: white; font-weight: bold;"
 );
