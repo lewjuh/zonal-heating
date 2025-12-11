@@ -3,9 +3,9 @@
 #   make bump-patch    - Bump patch version (1.2.3 -> 1.2.4)
 #   make bump-minor    - Bump minor version (1.2.3 -> 1.3.0)
 #   make bump-major    - Bump major version (1.2.3 -> 2.0.0)
-#   make release       - Bump patch and push to GitHub
-#   make release-minor - Bump minor and push to GitHub
-#   make release-major - Bump major and push to GitHub
+#   make release       - Bump patch and create GitHub release
+#   make release-minor - Bump minor and create GitHub release
+#   make release-major - Bump major and create GitHub release
 
 MANIFEST := custom_components/zonal_heating/manifest.json
 CURRENT_VERSION := $(shell grep -o '"version": "[^"]*"' $(MANIFEST) | cut -d'"' -f4)
@@ -24,7 +24,7 @@ PATCH_VERSION := $(VERSION_MAJOR).$(VERSION_MINOR).$(NEW_PATCH)
 MINOR_VERSION := $(VERSION_MAJOR).$(NEW_MINOR).0
 MAJOR_VERSION := $(NEW_MAJOR).0.0
 
-.PHONY: help version bump-patch bump-minor bump-major release release-minor release-major tag push
+.PHONY: help version bump-patch bump-minor bump-major release release-minor release-major
 
 help:
 	@echo "Zonal Heating Version Management"
@@ -33,13 +33,15 @@ help:
 	@echo ""
 	@echo "Commands:"
 	@echo "  make version       - Show current version"
-	@echo "  make bump-patch    - Bump to $(PATCH_VERSION)"
-	@echo "  make bump-minor    - Bump to $(MINOR_VERSION)"
-	@echo "  make bump-major    - Bump to $(MAJOR_VERSION)"
+	@echo "  make bump-patch    - Bump to $(PATCH_VERSION) (local only)"
+	@echo "  make bump-minor    - Bump to $(MINOR_VERSION) (local only)"
+	@echo "  make bump-major    - Bump to $(MAJOR_VERSION) (local only)"
 	@echo ""
-	@echo "  make release       - Bump patch, commit, tag, and push"
-	@echo "  make release-minor - Bump minor, commit, tag, and push"
-	@echo "  make release-major - Bump major, commit, tag, and push"
+	@echo "  make release       - Bump patch + commit + push + GitHub release"
+	@echo "  make release-minor - Bump minor + commit + push + GitHub release"
+	@echo "  make release-major - Bump major + commit + push + GitHub release"
+	@echo ""
+	@echo "  make gh-release    - Create GitHub release for current version"
 
 version:
 	@echo "Current version: $(CURRENT_VERSION)"
@@ -47,6 +49,7 @@ version:
 	@echo "  Minor bump -> $(MINOR_VERSION)"
 	@echo "  Major bump -> $(MAJOR_VERSION)"
 
+# Local version bumps (no git operations)
 bump-patch:
 	@echo "Bumping version: $(CURRENT_VERSION) -> $(PATCH_VERSION)"
 	@sed -i '' 's/"version": "$(CURRENT_VERSION)"/"version": "$(PATCH_VERSION)"/' $(MANIFEST)
@@ -62,62 +65,76 @@ bump-major:
 	@sed -i '' 's/"version": "$(CURRENT_VERSION)"/"version": "$(MAJOR_VERSION)"/' $(MANIFEST)
 	@echo "Updated $(MANIFEST)"
 
-commit-patch:
+# Create GitHub release for current version
+gh-release:
+	@echo "Creating GitHub release v$(CURRENT_VERSION)..."
+	@gh release create "v$(CURRENT_VERSION)" \
+		--title "v$(CURRENT_VERSION)" \
+		--notes "Release v$(CURRENT_VERSION)" \
+		--latest
+	@echo "GitHub release v$(CURRENT_VERSION) created!"
+
+# Full release workflows
+release:
+	@echo "=== Creating patch release ==="
+	@echo "Bumping version: $(CURRENT_VERSION) -> $(PATCH_VERSION)"
+	@sed -i '' 's/"version": "$(CURRENT_VERSION)"/"version": "$(PATCH_VERSION)"/' $(MANIFEST)
 	@git add $(MANIFEST)
 	@git commit -m "bump: $(PATCH_VERSION)"
+	@git push origin main
+	@echo "Creating GitHub release v$(PATCH_VERSION)..."
+	@gh release create "v$(PATCH_VERSION)" \
+		--title "v$(PATCH_VERSION)" \
+		--notes "Release v$(PATCH_VERSION)" \
+		--latest
+	@echo ""
+	@echo "=== Released v$(PATCH_VERSION) ==="
 
-commit-minor:
+release-minor:
+	@echo "=== Creating minor release ==="
+	@echo "Bumping version: $(CURRENT_VERSION) -> $(MINOR_VERSION)"
+	@sed -i '' 's/"version": "$(CURRENT_VERSION)"/"version": "$(MINOR_VERSION)"/' $(MANIFEST)
 	@git add $(MANIFEST)
 	@git commit -m "bump: $(MINOR_VERSION)"
+	@git push origin main
+	@echo "Creating GitHub release v$(MINOR_VERSION)..."
+	@gh release create "v$(MINOR_VERSION)" \
+		--title "v$(MINOR_VERSION)" \
+		--notes "Release v$(MINOR_VERSION)" \
+		--latest
+	@echo ""
+	@echo "=== Released v$(MINOR_VERSION) ==="
 
-commit-major:
+release-major:
+	@echo "=== Creating major release ==="
+	@echo "Bumping version: $(CURRENT_VERSION) -> $(MAJOR_VERSION)"
+	@sed -i '' 's/"version": "$(CURRENT_VERSION)"/"version": "$(MAJOR_VERSION)"/' $(MANIFEST)
 	@git add $(MANIFEST)
 	@git commit -m "bump: $(MAJOR_VERSION)"
-
-tag-patch:
-	@git tag -a "v$(PATCH_VERSION)" -m "Release v$(PATCH_VERSION)"
-	@echo "Created tag: v$(PATCH_VERSION)"
-
-tag-minor:
-	@git tag -a "v$(MINOR_VERSION)" -m "Release v$(MINOR_VERSION)"
-	@echo "Created tag: v$(MINOR_VERSION)"
-
-tag-major:
-	@git tag -a "v$(MAJOR_VERSION)" -m "Release v$(MAJOR_VERSION)"
-	@echo "Created tag: v$(MAJOR_VERSION)"
-
-push:
 	@git push origin main
-	@git push origin --tags
-	@echo "Pushed to GitHub"
-
-release: bump-patch commit-patch tag-patch push
+	@echo "Creating GitHub release v$(MAJOR_VERSION)..."
+	@gh release create "v$(MAJOR_VERSION)" \
+		--title "v$(MAJOR_VERSION)" \
+		--notes "Release v$(MAJOR_VERSION)" \
+		--latest
 	@echo ""
-	@echo "Released v$(PATCH_VERSION)"
-
-release-minor: bump-minor commit-minor tag-minor push
-	@echo ""
-	@echo "Released v$(MINOR_VERSION)"
-
-release-major: bump-major commit-major tag-major push
-	@echo ""
-	@echo "Released v$(MAJOR_VERSION)"
+	@echo "=== Released v$(MAJOR_VERSION) ==="
 
 # Dry run versions (show what would happen without making changes)
-dry-run-patch:
+dry-run:
 	@echo "Would bump: $(CURRENT_VERSION) -> $(PATCH_VERSION)"
 	@echo "Would commit: 'bump: $(PATCH_VERSION)'"
-	@echo "Would tag: v$(PATCH_VERSION)"
-	@echo "Would push to origin main with tags"
+	@echo "Would push to origin main"
+	@echo "Would create GitHub release: v$(PATCH_VERSION)"
 
 dry-run-minor:
 	@echo "Would bump: $(CURRENT_VERSION) -> $(MINOR_VERSION)"
 	@echo "Would commit: 'bump: $(MINOR_VERSION)'"
-	@echo "Would tag: v$(MINOR_VERSION)"
-	@echo "Would push to origin main with tags"
+	@echo "Would push to origin main"
+	@echo "Would create GitHub release: v$(MINOR_VERSION)"
 
 dry-run-major:
 	@echo "Would bump: $(CURRENT_VERSION) -> $(MAJOR_VERSION)"
 	@echo "Would commit: 'bump: $(MAJOR_VERSION)'"
-	@echo "Would tag: v$(MAJOR_VERSION)"
-	@echo "Would push to origin main with tags"
+	@echo "Would push to origin main"
+	@echo "Would create GitHub release: v$(MAJOR_VERSION)"
