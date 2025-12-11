@@ -25,6 +25,9 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
+STARTUP_GRACE_PERIOD = 120  # Seconds to ignore min_cycle_time after startup
+
+
 class ZoneStateMachine:
     """State machine for managing zone heating based on room states."""
 
@@ -57,6 +60,9 @@ class ZoneStateMachine:
         self._away_mode_pending = False
         self._people_home_count = 0
 
+        # Startup tracking - ignore min_cycle_time during grace period
+        self._startup_time: datetime | None = None
+
         # Retry timer for min_cycle_time blocking
         self._retry_timer: asyncio.TimerHandle | None = None
 
@@ -69,6 +75,14 @@ class ZoneStateMachine:
     async def async_start(self) -> None:
         """Start the zone state machine."""
         _LOGGER.info("Starting zone state machine for %s", self.zone_name)
+
+        # Record startup time for grace period
+        self._startup_time = datetime.now()
+        _LOGGER.info(
+            "%s: Startup grace period active - min_cycle_time ignored for %d seconds",
+            self.zone_name,
+            STARTUP_GRACE_PERIOD,
+        )
 
         # Start all room state machines
         for room in self.rooms:
@@ -417,8 +431,27 @@ class ZoneStateMachine:
         )
         _LOGGER.info("🏠" * 30)
 
+    def _is_in_startup_grace_period(self) -> bool:
+        """Check if we're still in the startup grace period."""
+        if self._startup_time is None:
+            return False
+
+        time_since_startup = (datetime.now() - self._startup_time).total_seconds()
+        return time_since_startup < STARTUP_GRACE_PERIOD
+
     def _should_respect_min_cycle_time(self, desired_on: bool) -> bool:
         """Check if we should respect minimum cycle time."""
+        # If in startup grace period, don't enforce min_cycle_time
+        if self._is_in_startup_grace_period():
+            time_since_startup = (datetime.now() - self._startup_time).total_seconds()
+            _LOGGER.debug(
+                "%s: In startup grace period (%.0fs elapsed of %ds), bypassing min_cycle_time",
+                self.zone_name,
+                time_since_startup,
+                STARTUP_GRACE_PERIOD,
+            )
+            return False
+
         # If no previous change, allow this one
         if self._last_zone_change is None:
             _LOGGER.debug("%s: No previous change, allowing action", self.zone_name)
@@ -443,7 +476,7 @@ class ZoneStateMachine:
             time_remaining_seconds = time_remaining * 60
 
             _LOGGER.warning(
-                "%s: ⏱️  MIN CYCLE TIME BLOCKING CHANGE! "
+                "%s: MIN CYCLE TIME BLOCKING CHANGE! "
                 "Would turn zone %s but only %.1f min elapsed (min: %d min, %.1f min remaining)",
                 self.zone_name,
                 "OFF→ON" if desired_on else "ON→OFF",
@@ -454,7 +487,7 @@ class ZoneStateMachine:
 
             # Schedule automatic retry after min_cycle_time expires
             _LOGGER.info(
-                "%s: ⏱️  Scheduling automatic retry in %.1f minutes",
+                "%s: Scheduling automatic retry in %.1f minutes",
                 self.zone_name,
                 time_remaining,
             )

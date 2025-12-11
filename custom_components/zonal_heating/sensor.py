@@ -184,6 +184,9 @@ class ZoneDiagnosticSensor(SensorEntity):
         # Build reason explanation
         reason = self._build_reason(coordinator, rooms_needing_heat, cycle_time_blocking)
 
+        # Check if in startup grace period
+        in_startup_grace = coordinator._is_in_startup_grace_period() if hasattr(coordinator, '_is_in_startup_grace_period') else False
+
         attrs = {
             "zone_climate": coordinator.zone_climate,
             "zone_is_on": coordinator._zone_is_on,
@@ -191,7 +194,8 @@ class ZoneDiagnosticSensor(SensorEntity):
             "min_cycle_time_minutes": coordinator.min_cycle_time,
             "time_since_last_change_minutes": time_since_change,
             "time_until_cycle_allowed_minutes": time_until_cycle_allowed,
-            "cycle_time_blocking": cycle_time_blocking,
+            "cycle_time_blocking": cycle_time_blocking and not in_startup_grace,
+            "startup_grace_period": in_startup_grace,
             "retry_timer_active": coordinator._retry_timer is not None,
             "rooms_total": len(coordinator.rooms),
             "rooms_needing_heat_count": len(rooms_needing_heat),
