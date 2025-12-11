@@ -301,6 +301,51 @@ class ZonalHeatingCard extends LitElement {
         background-color: var(--divider-color);
         margin: 10px 0;
       }
+      .status-indicators {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+      .status-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-size: 0.75em;
+        font-weight: 500;
+      }
+      .status-chip ha-icon {
+        --mdc-icon-size: 14px;
+        width: 14px;
+        height: 14px;
+      }
+      .status-chip.blocking {
+        background-color: rgba(255, 152, 0, 0.15);
+        color: var(--warning-color, #ff9800);
+        border: 1px solid var(--warning-color, #ff9800);
+      }
+      .status-chip.info {
+        background-color: rgba(33, 150, 243, 0.15);
+        color: var(--info-color, #2196f3);
+        border: 1px solid var(--info-color, #2196f3);
+      }
+      .status-chip.error {
+        background-color: rgba(244, 67, 54, 0.15);
+        color: var(--error-color, #f44336);
+        border: 1px solid var(--error-color, #f44336);
+      }
+      .status-chip.success {
+        background-color: rgba(76, 175, 80, 0.15);
+        color: var(--success-color, #4caf50);
+        border: 1px solid var(--success-color, #4caf50);
+      }
+      .status-chip.neutral {
+        background-color: rgba(158, 158, 158, 0.15);
+        color: var(--secondary-text-color);
+        border: 1px solid var(--divider-color);
+      }
     `;
   }
 
@@ -334,6 +379,8 @@ class ZonalHeatingCard extends LitElement {
         </div>
 
         ${this._renderZoneStatus(zoneState, zoneAttrs)}
+
+        ${this._renderStatusIndicators(zoneState, zoneAttrs)}
 
         <div class="divider"></div>
 
@@ -383,6 +430,101 @@ class ZonalHeatingCard extends LitElement {
         ${attrs.zone_current_temp
           ? html`<span class="zone-temp">${attrs.zone_current_temp.toFixed(1)}°C</span>`
           : ""}
+      </div>
+    `;
+  }
+
+  _renderStatusIndicators(state, attrs) {
+    const indicators = [];
+    const detailedRooms = attrs.detailed_rooms || [];
+
+    // Count rooms in different states
+    const windowOpenRooms = detailedRooms.filter((r) => r.window_confirmed || r.window_open);
+    const overheatedRooms = detailedRooms.filter((r) => r.overheated);
+    const offRooms = detailedRooms.filter((r) => !r.is_on);
+
+    // Cycle time blocking
+    if (attrs.cycle_time_blocking) {
+      const timeRemaining = attrs.time_until_cycle_allowed_minutes;
+      indicators.push(html`
+        <span class="status-chip blocking">
+          <ha-icon icon="mdi:timer-sand"></ha-icon>
+          Cycle cooldown ${timeRemaining ? `(${timeRemaining.toFixed(1)} min)` : ""}
+        </span>
+      `);
+    }
+
+    // Startup grace period
+    if (attrs.startup_grace_period) {
+      indicators.push(html`
+        <span class="status-chip success">
+          <ha-icon icon="mdi:rocket-launch"></ha-icon>
+          Startup grace active
+        </span>
+      `);
+    }
+
+    // Away mode pending
+    if (attrs.away_mode_pending) {
+      indicators.push(html`
+        <span class="status-chip info">
+          <ha-icon icon="mdi:home-clock"></ha-icon>
+          Away in ${attrs.away_mode_delay || "?"} min
+        </span>
+      `);
+    }
+
+    // Windows open
+    if (windowOpenRooms.length > 0) {
+      const names = windowOpenRooms.map((r) => r.name).join(", ");
+      indicators.push(html`
+        <span class="status-chip info" title="${names}">
+          <ha-icon icon="mdi:window-open-variant"></ha-icon>
+          ${windowOpenRooms.length} window${windowOpenRooms.length > 1 ? "s" : ""} open
+        </span>
+      `);
+    }
+
+    // Overheated rooms
+    if (overheatedRooms.length > 0) {
+      const names = overheatedRooms.map((r) => r.name).join(", ");
+      indicators.push(html`
+        <span class="status-chip error" title="${names}">
+          <ha-icon icon="mdi:thermometer-alert"></ha-icon>
+          ${overheatedRooms.length} room${overheatedRooms.length > 1 ? "s" : ""} overheated
+        </span>
+      `);
+    }
+
+    // Rooms off
+    if (offRooms.length > 0) {
+      const names = offRooms.map((r) => r.name).join(", ");
+      indicators.push(html`
+        <span class="status-chip neutral" title="${names}">
+          <ha-icon icon="mdi:power-off"></ha-icon>
+          ${offRooms.length} room${offRooms.length > 1 ? "s" : ""} off
+        </span>
+      `);
+    }
+
+    // If idle and no blocking issues, show satisfied message
+    if (state === "idle" && indicators.length === 0) {
+      indicators.push(html`
+        <span class="status-chip success">
+          <ha-icon icon="mdi:check-circle"></ha-icon>
+          All rooms at target temperature
+        </span>
+      `);
+    }
+
+    // If no indicators at all
+    if (indicators.length === 0) {
+      return html``;
+    }
+
+    return html`
+      <div class="status-indicators">
+        ${indicators}
       </div>
     `;
   }
@@ -647,7 +789,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c ZONAL-HEATING-CARD %c v1.1.0 ",
+  "%c ZONAL-HEATING-CARD %c v1.2.0 ",
   "color: white; background: #ff9800; font-weight: bold;",
   "color: #ff9800; background: white; font-weight: bold;"
 );

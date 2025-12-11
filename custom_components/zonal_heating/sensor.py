@@ -202,6 +202,7 @@ class ZoneDiagnosticSensor(SensorEntity):
             "rooms_needing_heat": [r["name"] for r in rooms_needing_heat],
             "away_mode": coordinator._away_mode,
             "away_mode_pending": coordinator._away_mode_pending,
+            "away_mode_delay": coordinator.away_mode_delay,
             "people_home": coordinator._people_home_count,
             "people_tracked": len(coordinator.person_entities),
             "reason": reason,
