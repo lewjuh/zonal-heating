@@ -16,6 +16,10 @@ A Home Assistant integration for intelligent multi-zone heating control with TRV
 - **Priority Heating**: Set heating priorities (1-10) for each room
 - **Easy Configuration**: Fully configurable through the UI with step-by-step setup
 - **Reconfiguration Support**: Edit zones, rooms, and settings without starting over
+- **Overheat Protection**: Automatically turns off TRVs when rooms exceed target temperature
+- **Away Mode**: Presence-based heating with configurable delay
+- **Diagnostic Sensors**: Detailed sensors for debugging and monitoring
+- **Custom Dashboard Card**: Built-in Lovelace card for visual heating status
 
 ## What is Zonal Heating?
 
@@ -67,6 +71,10 @@ Configure global heating parameters:
 - **Temperature Differential**: How far below target before requesting heat (default: 0.5°C)
 - **Minimum Cycle Time**: Minimum time between zone thermostat changes (default: 5 minutes)
 - **Window Open Delay**: Wait time before pausing heating when window opens (default: 30 seconds)
+- **Overheat Threshold**: Degrees above target to trigger TRV shutoff (default: 1.0°C)
+- **Away Temperature**: Target temperature when all tracked people are away (default: 16°C)
+- **Away Mode Delay**: Minutes to wait before activating away mode (default: 10 minutes)
+- **Person Entities**: Select person entities to track for away mode
 
 ### Step 4: Add More Zones (Optional)
 Repeat for additional zones in your home.
@@ -101,6 +109,92 @@ You can edit your configuration at any time:
    - Add/edit/delete zones
    - Add/edit/delete rooms
    - Update global settings
+
+## Dashboard Card
+
+The integration includes a custom Lovelace card that provides a visual overview of your heating system.
+
+### Adding the Card
+
+1. After installing the integration, add a new card to your dashboard
+2. Select "Custom: Zonal Heating Card" from the card picker
+3. Configure the card with your zone sensor
+
+### Manual Configuration
+
+```yaml
+type: custom:zonal-heating-card
+zone_sensor: sensor.zonal_heating_ground_floor_status
+title: Ground Floor Heating
+show_debug: false
+```
+
+### Card Configuration Options
+
+| Option | Required | Default | Description |
+|--------|----------|---------|-------------|
+| `zone_sensor` | Yes | - | The zone diagnostic sensor entity |
+| `title` | No | Zone name | Card title |
+| `show_debug` | No | `false` | Show debug information by default |
+
+### Card Features
+
+- **Zone Status**: Shows heating/idle/away status with colour coding
+- **Room List**: All rooms with current and target temperatures
+- **Status Reasons**: Clear explanations for why each room is in its current state
+- **Debug Toggle**: Click "Debug" to see detailed diagnostic information
+- **People Tracking**: Shows how many tracked people are home (if configured)
+
+### Registering the Card Resource
+
+The integration automatically registers the card. If you need to add it manually:
+
+1. Go to **Settings** → **Dashboards** → three-dot menu → **Resources**
+2. Add resource: `/zonal_heating/zonal-heating-card.js`
+3. Set type to "JavaScript Module"
+
+## Diagnostic Sensors
+
+The integration creates diagnostic sensors for monitoring and debugging.
+
+### Zone Sensor
+
+For each zone, a sensor is created: `sensor.zonal_heating_<zone_name>_status`
+
+**States:**
+- `heating` - Zone is actively heating
+- `idle` - All rooms satisfied, heating not needed
+- `away_mode` - Away mode active, reduced heating
+- `away_pending` - Away mode will activate after delay
+
+**Attributes:**
+- `zone_is_on` - Whether zone thermostat is on
+- `rooms_needing_heat_count` - Number of rooms requesting heat
+- `rooms_needing_heat` - List of room names needing heat
+- `cycle_time_blocking` - Whether min cycle time is preventing changes
+- `time_until_cycle_allowed_minutes` - Time remaining until changes allowed
+- `away_mode` - Away mode status
+- `people_home` - Number of tracked people at home
+- `detailed_rooms` - Full details of all rooms
+
+### Room Sensor
+
+For each room, a sensor is created: `sensor.zonal_heating_<room_name>_status`
+
+**States:**
+- `needs_heat` - Room needs heating
+- `satisfied` - Temperature at or above target
+- `window_open` - Window detected open
+- `overheated` - Room above overheat threshold
+- `off` - Climate entity is off
+
+**Attributes:**
+- `current_temp` - Current room temperature
+- `target_temp` - Target temperature
+- `temperature_deficit` - Degrees below heating threshold
+- `heat_threshold` - Temperature below which heating activates
+- `overheat_limit` - Temperature above which TRV shuts off
+- `reason` - Human-readable explanation of current state
 
 ## Example Configuration
 

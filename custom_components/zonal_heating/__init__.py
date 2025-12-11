@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
@@ -39,6 +41,9 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up zonal_heating from a config entry."""
     _LOGGER.debug("Setting up zonal_heating integration for entry %s", entry.entry_id)
+
+    # Register the Lovelace card
+    await _async_register_card(hass)
 
     # Initialize storage for this entry
     hass.data.setdefault(DOMAIN, {})
@@ -136,6 +141,24 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
         coordinators[zone_name] = zone_sm
 
         _LOGGER.info("Started zone state machine for: %s", zone_name)
+
+
+async def _async_register_card(hass: HomeAssistant) -> None:
+    """Register the Lovelace card as a static resource."""
+    if DOMAIN in hass.data and hass.data[DOMAIN].get("card_registered"):
+        return
+
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN]["card_registered"] = True
+
+    www_path = Path(__file__).parent / "www"
+    card_url = f"/{DOMAIN}/zonal-heating-card.js"
+
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig(card_url, str(www_path / "zonal-heating-card.js"), False)]
+    )
+
+    _LOGGER.info("Registered zonal-heating-card at %s", card_url)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
