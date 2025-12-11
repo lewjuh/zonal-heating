@@ -6,7 +6,12 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from homeassistant.components.climate import DOMAIN as CLIMATE_DOMAIN, SERVICE_TURN_OFF
+from homeassistant.components.climate import (
+    DOMAIN as CLIMATE_DOMAIN,
+    SERVICE_SET_HVAC_MODE,
+    SERVICE_TURN_OFF,
+    HVACMode,
+)
 from homeassistant.const import ATTR_ENTITY_ID, STATE_ON
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
@@ -225,6 +230,11 @@ class RoomStateMachine:
     @property
     def needs_heat(self) -> bool:
         """Return True if room needs heat."""
+        # If overheated, definitely don't need more heat
+        if self._overheated:
+            _LOGGER.debug("%s: No heat needed - room is overheated", self.room_name)
+            return False
+
         if not self._is_on:
             _LOGGER.debug("%s: No heat needed - climate is OFF", self.room_name)
             return False
@@ -306,12 +316,11 @@ class RoomStateMachine:
         overheat_limit = self._target_temp + self.overheat_threshold
         is_overheating = self._current_temp >= overheat_limit
 
-        if is_overheating and self._is_on:
-            self._overheated = True
-
+        if is_overheating:
             if not was_overheated:
+                self._overheated = True
                 _LOGGER.info(
-                    "%s: 🌡️ OVERHEAT - Current: %.1f°C >= Limit: %.1f°C (Target: %.1f°C + %.1f°C), turning off TRV",
+                    "%s: OVERHEAT - Current: %.1f°C >= Limit: %.1f°C (Target: %.1f°C + %.1f°C), turning off TRV",
                     self.room_name,
                     self._current_temp,
                     overheat_limit,
@@ -325,11 +334,22 @@ class RoomStateMachine:
                     {ATTR_ENTITY_ID: self.climate_entity},
                     blocking=True,
                 )
-        elif not is_overheating and was_overheated:
+        elif was_overheated:
+            # Temperature dropped below overheat limit - turn TRV back on
             self._overheated = False
             _LOGGER.info(
-                "%s: Temperature dropped below overheat limit (%.1f°C < %.1f°C)",
+                "%s: OVERHEAT CLEARED - Temp %.1f°C < Limit %.1f°C, turning TRV back on",
                 self.room_name,
                 self._current_temp,
                 overheat_limit,
+            )
+
+            await self.hass.services.async_call(
+                CLIMATE_DOMAIN,
+                SERVICE_SET_HVAC_MODE,
+                {
+                    ATTR_ENTITY_ID: self.climate_entity,
+                    "hvac_mode": HVACMode.HEAT,
+                },
+                blocking=True,
             )
