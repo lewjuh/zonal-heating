@@ -6,6 +6,10 @@
 #   make release       - Bump patch and create GitHub release
 #   make release-minor - Bump minor and create GitHub release
 #   make release-major - Bump major and create GitHub release
+#
+# Release notes:
+#   make release NOTES="Fixed bug with window sensors"
+#   - Or leave NOTES empty to auto-generate from commits
 
 MANIFEST := custom_components/zonal_heating/manifest.json
 CURRENT_VERSION := $(shell grep -o '"version": "[^"]*"' $(MANIFEST) | cut -d'"' -f4)
@@ -23,6 +27,9 @@ NEW_MAJOR := $(shell echo $$(($(VERSION_MAJOR) + 1)))
 PATCH_VERSION := $(VERSION_MAJOR).$(VERSION_MINOR).$(NEW_PATCH)
 MINOR_VERSION := $(VERSION_MAJOR).$(NEW_MINOR).0
 MAJOR_VERSION := $(NEW_MAJOR).0.0
+
+# Optional release notes (pass via NOTES="your notes here")
+NOTES ?=
 
 .PHONY: help version bump-patch bump-minor bump-major release release-minor release-major
 
@@ -42,6 +49,10 @@ help:
 	@echo "  make release-major - Bump major + commit + push + GitHub release"
 	@echo ""
 	@echo "  make gh-release    - Create GitHub release for current version"
+	@echo ""
+	@echo "Release notes (optional):"
+	@echo "  make release NOTES=\"Your release notes here\""
+	@echo "  - If NOTES is empty, auto-generates from commits"
 
 version:
 	@echo "Current version: $(CURRENT_VERSION)"
@@ -68,10 +79,17 @@ bump-major:
 # Create GitHub release for current version
 gh-release:
 	@echo "Creating GitHub release v$(CURRENT_VERSION)..."
+ifeq ($(NOTES),)
 	@gh release create "v$(CURRENT_VERSION)" \
 		--title "v$(CURRENT_VERSION)" \
-		--notes "Release v$(CURRENT_VERSION)" \
+		--generate-notes \
 		--latest
+else
+	@gh release create "v$(CURRENT_VERSION)" \
+		--title "v$(CURRENT_VERSION)" \
+		--notes "$(NOTES)" \
+		--latest
+endif
 	@echo "GitHub release v$(CURRENT_VERSION) created!"
 
 # Full release workflows
@@ -83,10 +101,17 @@ release:
 	@git commit -m "bump: $(PATCH_VERSION)"
 	@git push origin main
 	@echo "Creating GitHub release v$(PATCH_VERSION)..."
+ifeq ($(NOTES),)
 	@gh release create "v$(PATCH_VERSION)" \
 		--title "v$(PATCH_VERSION)" \
-		--notes "Release v$(PATCH_VERSION)" \
+		--generate-notes \
 		--latest
+else
+	@gh release create "v$(PATCH_VERSION)" \
+		--title "v$(PATCH_VERSION)" \
+		--notes "$(NOTES)" \
+		--latest
+endif
 	@echo ""
 	@echo "=== Released v$(PATCH_VERSION) ==="
 
@@ -98,10 +123,17 @@ release-minor:
 	@git commit -m "bump: $(MINOR_VERSION)"
 	@git push origin main
 	@echo "Creating GitHub release v$(MINOR_VERSION)..."
+ifeq ($(NOTES),)
 	@gh release create "v$(MINOR_VERSION)" \
 		--title "v$(MINOR_VERSION)" \
-		--notes "Release v$(MINOR_VERSION)" \
+		--generate-notes \
 		--latest
+else
+	@gh release create "v$(MINOR_VERSION)" \
+		--title "v$(MINOR_VERSION)" \
+		--notes "$(NOTES)" \
+		--latest
+endif
 	@echo ""
 	@echo "=== Released v$(MINOR_VERSION) ==="
 
@@ -113,10 +145,17 @@ release-major:
 	@git commit -m "bump: $(MAJOR_VERSION)"
 	@git push origin main
 	@echo "Creating GitHub release v$(MAJOR_VERSION)..."
+ifeq ($(NOTES),)
 	@gh release create "v$(MAJOR_VERSION)" \
 		--title "v$(MAJOR_VERSION)" \
-		--notes "Release v$(MAJOR_VERSION)" \
+		--generate-notes \
 		--latest
+else
+	@gh release create "v$(MAJOR_VERSION)" \
+		--title "v$(MAJOR_VERSION)" \
+		--notes "$(NOTES)" \
+		--latest
+endif
 	@echo ""
 	@echo "=== Released v$(MAJOR_VERSION) ==="
 
