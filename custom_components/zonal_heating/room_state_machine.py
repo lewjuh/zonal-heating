@@ -34,6 +34,7 @@ class RoomStateMachine:
         window_delay: int = 30,
         temp_differential: float = 0.5,
         overheat_threshold: float = 1.0,
+        temp_sensor: str | None = None,
     ) -> None:
         """Initialize room state machine."""
         self.hass = hass
@@ -43,6 +44,7 @@ class RoomStateMachine:
         self.window_delay = window_delay
         self.temp_differential = temp_differential
         self.overheat_threshold = overheat_threshold
+        self.temp_sensor = temp_sensor
 
         # State tracking
         self._window_open = False
@@ -79,6 +81,21 @@ class RoomStateMachine:
                 )
             )
 
+        # Track external temperature sensor
+        if self.temp_sensor:
+            self._remove_listeners.append(
+                async_track_state_change_event(
+                    self.hass,
+                    [self.temp_sensor],
+                    self._async_temp_sensor_changed,
+                )
+            )
+            _LOGGER.info(
+                "%s: Using external temperature sensor %s",
+                self.room_name,
+                self.temp_sensor,
+            )
+
         # Initialize state
         await self._async_update_climate_state()
         self._update_window_state()
@@ -96,6 +113,11 @@ class RoomStateMachine:
     @callback
     def _async_climate_changed(self, event: Event) -> None:
         """Handle climate entity state changes."""
+        self.hass.async_create_task(self._async_update_climate_state())
+
+    @callback
+    def _async_temp_sensor_changed(self, event: Event) -> None:
+        """Handle external temperature sensor state changes."""
         self.hass.async_create_task(self._async_update_climate_state())
 
     @callback
@@ -182,7 +204,18 @@ class RoomStateMachine:
         # Calculate old heating need before updating
         old_needs_heat = self.needs_heat
 
-        self._current_temp = state.attributes.get("current_temperature")
+        # Use external temperature sensor if configured, otherwise use climate entity
+        if self.temp_sensor:
+            temp_state = self.hass.states.get(self.temp_sensor)
+            if temp_state and temp_state.state not in ("unavailable", "unknown"):
+                try:
+                    self._current_temp = float(temp_state.state)
+                except (ValueError, TypeError):
+                    self._current_temp = state.attributes.get("current_temperature")
+            else:
+                self._current_temp = state.attributes.get("current_temperature")
+        else:
+            self._current_temp = state.attributes.get("current_temperature")
         self._target_temp = state.attributes.get("temperature")
         self._is_on = state.state not in ("off", "unavailable", "unknown")
 

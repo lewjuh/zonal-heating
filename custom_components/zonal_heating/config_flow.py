@@ -11,6 +11,7 @@ from homeassistant import config_entries
 from homeassistant.components.binary_sensor import DOMAIN as BINARY_SENSOR_DOMAIN
 from homeassistant.components.climate import DOMAIN as CLIMATE_DOMAIN
 from homeassistant.components.person import DOMAIN as PERSON_DOMAIN
+from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
 from homeassistant.data_entry_flow import FlowResult
@@ -26,6 +27,7 @@ from .const import (
     CONF_ROOMS,
     CONF_SETTINGS,
     CONF_TEMP_DIFFERENTIAL,
+    CONF_TEMP_SENSOR,
     CONF_TRV_ENTITY,
     CONF_WINDOW_DELAY,
     CONF_WINDOW_SENSORS,
@@ -131,6 +133,7 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 room = {
                     CONF_NAME: user_input[CONF_NAME],
                     CONF_TRV_ENTITY: trv_entity,
+                    CONF_TEMP_SENSOR: user_input.get(CONF_TEMP_SENSOR),
                     CONF_WINDOW_SENSORS: user_input.get(CONF_WINDOW_SENSORS, []),
                     CONF_PRIORITY: user_input.get(CONF_PRIORITY, DEFAULT_PRIORITY),
                 }
@@ -146,6 +149,12 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_NAME): str,
                     vol.Required(CONF_TRV_ENTITY): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain=CLIMATE_DOMAIN)
+                    ),
+                    vol.Optional(CONF_TEMP_SENSOR): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=SENSOR_DOMAIN,
+                            device_class="temperature",
+                        )
                     ),
                     vol.Optional(CONF_WINDOW_SENSORS): selector.EntitySelector(
                         selector.EntitySelectorConfig(
@@ -484,6 +493,7 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 room = {
                     CONF_NAME: user_input[CONF_NAME],
                     CONF_TRV_ENTITY: trv_entity,
+                    CONF_TEMP_SENSOR: user_input.get(CONF_TEMP_SENSOR),
                     CONF_WINDOW_SENSORS: user_input.get(CONF_WINDOW_SENSORS, []),
                     CONF_PRIORITY: user_input.get(CONF_PRIORITY, DEFAULT_PRIORITY),
                 }
@@ -515,6 +525,15 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_TRV_ENTITY, default=current_room.get(CONF_TRV_ENTITY)
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain=CLIMATE_DOMAIN)
+                    ),
+                    vol.Optional(
+                        CONF_TEMP_SENSOR,
+                        default=current_room.get(CONF_TEMP_SENSOR),
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=SENSOR_DOMAIN,
+                            device_class="temperature",
+                        )
                     ),
                     vol.Optional(
                         CONF_WINDOW_SENSORS,

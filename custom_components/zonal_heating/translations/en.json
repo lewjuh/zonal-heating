@@ -17,12 +17,14 @@
                 "data": {
                     "name": "Room Name",
                     "priority": "Heating Priority",
+                    "temp_sensor": "External Temperature Sensor (Optional)",
                     "trv_entity": "TRV Climate Entity",
                     "window_sensors": "Window Sensors (Optional)"
                 },
                 "data_description": {
                     "name": "Name for this room (e.g., 'Living Room', 'Bedroom')",
                     "priority": "Priority for this room (1-10, where 10 is highest priority)",
+                    "temp_sensor": "External sensor for more accurate room temperature (overrides TRV's built-in sensor)",
                     "trv_entity": "The climate entity for this room's radiator valve",
                     "window_sensors": "Window/door sensors - heating pauses when open"
                 },
@@ -52,12 +54,14 @@
                 "data": {
                     "name": "Room Name",
                     "priority": "Heating Priority",
+                    "temp_sensor": "External Temperature Sensor (Optional)",
                     "trv_entity": "TRV Climate Entity",
                     "window_sensors": "Window Sensors (Optional)"
                 },
                 "data_description": {
                     "name": "Name for this room (e.g., 'Living Room', 'Bedroom')",
                     "priority": "Priority for this room (1-10, where 10 is highest priority)",
+                    "temp_sensor": "External sensor for more accurate room temperature (overrides TRV's built-in sensor)",
                     "trv_entity": "The climate entity for this room's radiator valve",
                     "window_sensors": "Window/door sensors - heating pauses when open"
                 },

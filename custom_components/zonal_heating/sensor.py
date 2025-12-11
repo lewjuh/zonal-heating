@@ -333,6 +333,8 @@ class RoomDiagnosticSensor(SensorEntity):
 
         attrs = {
             "climate_entity": room.climate_entity,
+            "temp_sensor": room.temp_sensor,
+            "using_external_sensor": room.temp_sensor is not None,
             "current_temp": room._current_temp,
             "target_temp": room._target_temp,
             "temp_differential": room.temp_differential,

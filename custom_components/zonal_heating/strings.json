@@ -19,12 +19,14 @@
                 "data": {
                     "name": "Room Name",
                     "trv_entity": "TRV Climate Entity",
+                    "temp_sensor": "External Temperature Sensor (Optional)",
                     "window_sensors": "Window Sensors (Optional)",
                     "priority": "Heating Priority"
                 },
                 "data_description": {
                     "name": "Name for this room (e.g., 'Living Room', 'Bedroom')",
                     "trv_entity": "The climate entity for this room's radiator valve",
+                    "temp_sensor": "External sensor for more accurate room temperature (overrides TRV's built-in sensor)",
                     "window_sensors": "Window/door sensors - heating pauses when open",
                     "priority": "Priority for this room (1-10, where 10 is highest priority)"
                 }
@@ -107,12 +109,14 @@
                 "data": {
                     "name": "[%key:component::zonal_heating::config::step::add_room::data::name%]",
                     "trv_entity": "[%key:component::zonal_heating::config::step::add_room::data::trv_entity%]",
+                    "temp_sensor": "[%key:component::zonal_heating::config::step::add_room::data::temp_sensor%]",
                     "window_sensors": "[%key:component::zonal_heating::config::step::add_room::data::window_sensors%]",
                     "priority": "[%key:component::zonal_heating::config::step::add_room::data::priority%]"
                 },
                 "data_description": {
                     "name": "[%key:component::zonal_heating::config::step::add_room::data_description::name%]",
                     "trv_entity": "[%key:component::zonal_heating::config::step::add_room::data_description::trv_entity%]",
+                    "temp_sensor": "[%key:component::zonal_heating::config::step::add_room::data_description::temp_sensor%]",
                     "window_sensors": "[%key:component::zonal_heating::config::step::add_room::data_description::window_sensors%]",
                     "priority": "[%key:component::zonal_heating::config::step::add_room::data_description::priority%]"
                 }

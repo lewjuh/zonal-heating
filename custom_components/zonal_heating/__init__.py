@@ -18,6 +18,7 @@ from .const import (
     CONF_ROOMS,
     CONF_SETTINGS,
     CONF_TEMP_DIFFERENTIAL,
+    CONF_TEMP_SENSOR,
     CONF_TRV_ENTITY,
     CONF_WINDOW_DELAY,
     CONF_WINDOW_SENSORS,
@@ -101,6 +102,7 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
         for room in zone.get(CONF_ROOMS, []):
             room_name = room.get("name", "")
             trv_entity = room.get(CONF_TRV_ENTITY)
+            temp_sensor = room.get(CONF_TEMP_SENSOR)
             window_sensors = room.get(CONF_WINDOW_SENSORS, [])
 
             if not trv_entity:
@@ -115,6 +117,7 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
                 window_delay=window_delay,
                 temp_differential=temp_differential,
                 overheat_threshold=overheat_threshold,
+                temp_sensor=temp_sensor,
             )
             room_state_machines.append(room_sm)
 
