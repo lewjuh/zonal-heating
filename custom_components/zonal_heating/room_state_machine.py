@@ -35,6 +35,7 @@ class RoomStateMachine:
         temp_differential: float = 0.5,
         overheat_threshold: float = 1.0,
         temp_sensor: str | None = None,
+        stale_sensor_threshold: float = 3.0,
     ) -> None:
         """Initialize room state machine."""
         self.hass = hass
@@ -45,6 +46,7 @@ class RoomStateMachine:
         self.temp_differential = temp_differential
         self.overheat_threshold = overheat_threshold
         self.temp_sensor = temp_sensor
+        self.stale_sensor_threshold = stale_sensor_threshold
 
         # State tracking
         self._window_open = False
@@ -54,6 +56,8 @@ class RoomStateMachine:
         self._target_temp: float | None = None
         self._is_on = False
         self._overheated = False
+        self._using_stale_fallback = False  # True when external sensor appears stale
+        self._trv_turned_off_for_window = False  # Track if we turned off TRV for window
 
         # Listeners
         self._remove_listeners: list[Callable] = []
@@ -100,6 +104,15 @@ class RoomStateMachine:
         await self._async_update_climate_state()
         self._update_window_state()
 
+        # Bug fix: If window is already open on startup, start the confirmation timer
+        if self._window_open:
+            _LOGGER.info(
+                "%s: Window already open on startup, starting %ds confirmation timer",
+                self.room_name,
+                self.window_delay,
+            )
+            self._start_window_delay_timer()
+
     async def async_stop(self) -> None:
         """Stop the room state machine."""
         for remove_listener in self._remove_listeners:
@@ -136,8 +149,19 @@ class RoomStateMachine:
                 if self._window_timer:
                     self._window_timer.cancel()
                     self._window_timer = None
+
+                # Bug fix: Restore TRV if we turned it off for window
+                if self._window_open_confirmed and self._trv_turned_off_for_window:
+                    _LOGGER.info(
+                        "%s: Window closed, restoring TRV to HEAT mode",
+                        self.room_name,
+                    )
+                    self.hass.async_create_task(self._async_restore_trv_after_window())
+                else:
+                    _LOGGER.info("%s: Window closed", self.room_name)
+
                 self._window_open_confirmed = False
-                _LOGGER.info("%s: Window closed", self.room_name)
+                self._trv_turned_off_for_window = False
 
     def _update_window_state(self) -> None:
         """Update window open state from sensors."""
@@ -176,6 +200,7 @@ class RoomStateMachine:
 
         # Mark window as confirmed after delay
         self._window_open_confirmed = True
+        self._trv_turned_off_for_window = True
         _LOGGER.info(
             "%s: Window open confirmed after %d second delay, turning off TRV",
             self.room_name,
@@ -187,6 +212,26 @@ class RoomStateMachine:
             CLIMATE_DOMAIN,
             SERVICE_TURN_OFF,
             {ATTR_ENTITY_ID: self.climate_entity},
+            blocking=True,
+        )
+
+    async def _async_restore_trv_after_window(self) -> None:
+        """Restore TRV to HEAT mode after window closes."""
+        # Don't restore if room is currently overheated
+        if self._overheated:
+            _LOGGER.info(
+                "%s: Not restoring TRV after window close - room is overheated",
+                self.room_name,
+            )
+            return
+
+        await self.hass.services.async_call(
+            CLIMATE_DOMAIN,
+            SERVICE_SET_HVAC_MODE,
+            {
+                ATTR_ENTITY_ID: self.climate_entity,
+                "hvac_mode": HVACMode.HEAT,
+            },
             blocking=True,
         )
 
@@ -205,17 +250,59 @@ class RoomStateMachine:
         old_needs_heat = self.needs_heat
 
         # Use external temperature sensor if configured, otherwise use climate entity
+        trv_temp = state.attributes.get("current_temperature")
+
         if self.temp_sensor:
             temp_state = self.hass.states.get(self.temp_sensor)
             if temp_state and temp_state.state not in ("unavailable", "unknown"):
                 try:
-                    self._current_temp = float(temp_state.state)
+                    external_temp = float(temp_state.state)
+
+                    # Bug fix: Detect stale sensor data by comparing with TRV temp
+                    if trv_temp is not None:
+                        temp_difference = abs(external_temp - trv_temp)
+                        if temp_difference > self.stale_sensor_threshold:
+                            if not self._using_stale_fallback:
+                                _LOGGER.warning(
+                                    "%s: External sensor appears stale! "
+                                    "Sensor: %.1f°C, TRV: %.1f°C (diff: %.1f°C > threshold: %.1f°C). "
+                                    "Falling back to TRV temperature.",
+                                    self.room_name,
+                                    external_temp,
+                                    trv_temp,
+                                    temp_difference,
+                                    self.stale_sensor_threshold,
+                                )
+                                self._using_stale_fallback = True
+                            self._current_temp = trv_temp
+                        else:
+                            if self._using_stale_fallback:
+                                _LOGGER.info(
+                                    "%s: External sensor recovered, resuming use "
+                                    "(Sensor: %.1f°C, TRV: %.1f°C)",
+                                    self.room_name,
+                                    external_temp,
+                                    trv_temp,
+                                )
+                                self._using_stale_fallback = False
+                            self._current_temp = external_temp
+                    else:
+                        self._current_temp = external_temp
                 except (ValueError, TypeError):
-                    self._current_temp = state.attributes.get("current_temperature")
+                    if self._using_stale_fallback:
+                        self._using_stale_fallback = False
+                    self._current_temp = trv_temp
             else:
-                self._current_temp = state.attributes.get("current_temperature")
+                # Sensor unavailable - reset stale flag and use TRV
+                if self._using_stale_fallback:
+                    _LOGGER.info(
+                        "%s: External sensor unavailable, resetting stale fallback",
+                        self.room_name,
+                    )
+                    self._using_stale_fallback = False
+                self._current_temp = trv_temp
         else:
-            self._current_temp = state.attributes.get("current_temperature")
+            self._current_temp = trv_temp
         self._target_temp = state.attributes.get("temperature")
         self._is_on = state.state not in ("off", "unavailable", "unknown")
 

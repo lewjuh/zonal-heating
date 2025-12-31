@@ -69,6 +69,13 @@ class ZoneStateMachine:
         # Away mode delay timer
         self._away_mode_timer: asyncio.TimerHandle | None = None
 
+        # Track if we're currently updating zone (to detect external changes)
+        self._updating_zone = False
+
+        # Periodic safety check timer
+        self._periodic_timer: asyncio.TimerHandle | None = None
+        self._periodic_interval = 60  # Seconds between periodic checks
+
         # Listeners
         self._remove_listeners: list[Callable] = []
 
@@ -131,6 +138,14 @@ class ZoneStateMachine:
         # Do initial evaluation
         await self._async_evaluate_zone()
 
+        # Start periodic safety check timer
+        self._schedule_periodic_check()
+        _LOGGER.info(
+            "%s: Periodic safety check enabled (every %d seconds)",
+            self.zone_name,
+            self._periodic_interval,
+        )
+
     async def async_stop(self) -> None:
         """Stop the zone state machine."""
         # Cancel any pending retry timer
@@ -142,6 +157,11 @@ class ZoneStateMachine:
         if self._away_mode_timer:
             self._away_mode_timer.cancel()
             self._away_mode_timer = None
+
+        # Cancel periodic safety check timer
+        if self._periodic_timer:
+            self._periodic_timer.cancel()
+            self._periodic_timer = None
 
         for room in self.rooms:
             await room.async_stop()
@@ -203,14 +223,55 @@ class ZoneStateMachine:
                     # Trigger zone evaluation to resume normal operation
                     self.hass.async_create_task(self._async_evaluate_zone())
 
+    def _schedule_periodic_check(self) -> None:
+        """Schedule the next periodic safety check."""
+        if self._periodic_timer:
+            self._periodic_timer.cancel()
+
+        self._periodic_timer = self.hass.loop.call_later(
+            self._periodic_interval,
+            lambda: self.hass.async_create_task(self._async_periodic_check()),
+        )
+
+    async def _async_periodic_check(self) -> None:
+        """Perform periodic safety check to ensure state consistency."""
+        _LOGGER.debug(
+            "%s: Running periodic safety check",
+            self.zone_name,
+        )
+
+        # Re-read all room states to ensure they're current
+        for room in self.rooms:
+            await room._async_update_climate_state()
+
+        # Evaluate zone state
+        await self._async_evaluate_zone()
+
+        # Schedule next check
+        self._schedule_periodic_check()
+
     async def _async_update_zone_climate_state(self) -> None:
         """Update zone climate state from entity."""
         state = self.hass.states.get(self.zone_climate)
         if not state:
             return
 
+        old_zone_is_on = self._zone_is_on
         self._zone_current_temp = state.attributes.get("current_temperature")
         self._zone_is_on = state.state == HVACMode.HEAT
+
+        # Bug fix: Detect external changes (manual override) and trigger evaluation
+        if old_zone_is_on != self._zone_is_on and not self._updating_zone:
+            _LOGGER.info(
+                "%s: External zone state change detected (%s → %s), triggering evaluation",
+                self.zone_name,
+                "ON" if old_zone_is_on else "OFF",
+                "ON" if self._zone_is_on else "OFF",
+            )
+            # Update last_zone_change to prevent immediate re-toggle
+            self._last_zone_change = datetime.now()
+            # Trigger evaluation to sync state
+            self.hass.async_create_task(self._async_evaluate_zone())
 
     def _update_person_states(self) -> None:
         """Update person states and away mode."""
@@ -557,49 +618,55 @@ class ZoneStateMachine:
         else:
             _LOGGER.info("%s:   No rooms need heat", self.zone_name)
 
-        if turn_on:
-            # Turn zone ON - set temperature above current to trigger boiler
-            target_temp = (zone_temp + 5) if zone_temp is not None else 25
-            _LOGGER.info(
-                "%s: 🌡️  Setting zone temperature: %.1f°C → %.1f°C (current + 5°C)",
-                self.zone_name,
-                zone_temp or 0,
-                target_temp,
-            )
+        # Mark that we're updating to prevent external change detection
+        self._updating_zone = True
 
+        try:
+            if turn_on:
+                # Turn zone ON - set temperature above current to trigger boiler
+                target_temp = (zone_temp + 5) if zone_temp is not None else 25
+                _LOGGER.info(
+                    "%s: 🌡️  Setting zone temperature: %.1f°C → %.1f°C (current + 5°C)",
+                    self.zone_name,
+                    zone_temp or 0,
+                    target_temp,
+                )
+
+                await self.hass.services.async_call(
+                    "climate",
+                    SERVICE_SET_TEMPERATURE,
+                    {
+                        ATTR_ENTITY_ID: self.zone_climate,
+                        ATTR_TEMPERATURE: target_temp,
+                    },
+                    blocking=True,
+                )
+            else:
+                _LOGGER.info(
+                    "%s: ❄️  Turning OFF - no temperature change needed", self.zone_name
+                )
+
+            # Set HVAC mode
+            _LOGGER.info(
+                "%s: Setting HVAC mode to %s",
+                self.zone_name,
+                HVACMode.HEAT if turn_on else HVACMode.OFF,
+            )
             await self.hass.services.async_call(
                 "climate",
-                SERVICE_SET_TEMPERATURE,
+                SERVICE_SET_HVAC_MODE,
                 {
                     ATTR_ENTITY_ID: self.zone_climate,
-                    ATTR_TEMPERATURE: target_temp,
+                    "hvac_mode": HVACMode.HEAT if turn_on else HVACMode.OFF,
                 },
                 blocking=True,
             )
-        else:
-            _LOGGER.info(
-                "%s: ❄️  Turning OFF - no temperature change needed", self.zone_name
-            )
 
-        # Set HVAC mode
-        _LOGGER.info(
-            "%s: Setting HVAC mode to %s",
-            self.zone_name,
-            HVACMode.HEAT if turn_on else HVACMode.OFF,
-        )
-        await self.hass.services.async_call(
-            "climate",
-            SERVICE_SET_HVAC_MODE,
-            {
-                ATTR_ENTITY_ID: self.zone_climate,
-                "hvac_mode": HVACMode.HEAT if turn_on else HVACMode.OFF,
-            },
-            blocking=True,
-        )
-
-        # Update tracking
-        self._zone_is_on = turn_on
-        self._last_zone_change = datetime.now()
+            # Update tracking
+            self._zone_is_on = turn_on
+            self._last_zone_change = datetime.now()
+        finally:
+            self._updating_zone = False
 
         _LOGGER.info(
             "%s: ✅ Zone change complete - now %s (min_cycle_time reset)",

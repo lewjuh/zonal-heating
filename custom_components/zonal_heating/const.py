@@ -36,6 +36,7 @@ DEFAULT_PRIORITY = 5  # Default room priority (1-10 scale)
 DEFAULT_AWAY_TEMPERATURE = 16.0  # °C temperature when all away
 DEFAULT_AWAY_MODE_DELAY = 10  # Minutes to wait before activating away mode
 DEFAULT_OVERHEAT_THRESHOLD = 1.0  # °C above target to turn off TRV
+DEFAULT_SENSOR_STALE_THRESHOLD = 3.0  # °C difference to consider external sensor stale
 
 # Update intervals
 UPDATE_INTERVAL_ZONE_EVAL = 30  # Seconds between zone evaluations

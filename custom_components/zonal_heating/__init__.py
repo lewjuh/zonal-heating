@@ -28,6 +28,7 @@ from .const import (
     DEFAULT_AWAY_TEMPERATURE,
     DEFAULT_MIN_CYCLE_TIME,
     DEFAULT_OVERHEAT_THRESHOLD,
+    DEFAULT_SENSOR_STALE_THRESHOLD,
     DEFAULT_TEMP_DIFFERENTIAL,
     DEFAULT_WINDOW_DELAY,
     DOMAIN,
@@ -118,6 +119,7 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
                 temp_differential=temp_differential,
                 overheat_threshold=overheat_threshold,
                 temp_sensor=temp_sensor,
+                stale_sensor_threshold=DEFAULT_SENSOR_STALE_THRESHOLD,
             )
             room_state_machines.append(room_sm)
 
