@@ -398,7 +398,9 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         # Check room state machine conditions
         if room_sm:
             if room_sm._overheated:
-                return f"Overheated - TRV turned off (temp >= {room_sm._target_temp + room_sm.overheat_threshold:.1f}C)"
+                if room_sm._target_temp is not None:
+                    return f"Overheated - TRV turned off (temp >= {room_sm._target_temp + room_sm.overheat_threshold:.1f}C)"
+                return "Overheated - TRV turned off"
 
             if room_sm._window_open_confirmed:
                 return "Window confirmed open - TRV turned off"
