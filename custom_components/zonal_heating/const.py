@@ -39,6 +39,7 @@ DEFAULT_AWAY_MODE_DELAY = 10  # Minutes to wait before activating away mode
 DEFAULT_OVERHEAT_THRESHOLD = 1.0  # °C above target to turn off TRV
 DEFAULT_SENSOR_STALE_THRESHOLD = 3.0  # °C difference to consider external sensor stale
 DEFAULT_CALIBRATION_SYNC = False  # Sync external temp to TRV via calibration offset
+FROST_PROTECTION_TEMP = 5.0  # °C - minimum temp when TRV needs to be "disabled"
 
 # Update intervals
 UPDATE_INTERVAL_ZONE_EVAL = 30  # Seconds between zone evaluations

@@ -194,6 +194,13 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
 
         # Note: Initial window state is handled by room state machine with proper delay
 
+        # Schedule TRV target sync after brief delay to ensure TRV is available
+        # This ensures the TRV matches our restored target temperature
+        self.hass.loop.call_later(
+            3.0,
+            lambda: self.hass.async_create_task(self._async_startup_sync_trv()),
+        )
+
     @callback
     def _async_trv_changed(self, event) -> None:
         """Handle TRV state changes."""
@@ -302,6 +309,106 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         zone_state = self.hass.states.get(self._zone_thermostat)
         if zone_state:
             self._zone_active = zone_state.state == HVACMode.HEAT
+
+    async def _async_startup_sync_trv(self) -> None:
+        """Sync our target temperature to the TRV on startup.
+
+        This ensures the TRV matches the virtual entity's restored target,
+        preventing mismatches from previous frost protection or external changes.
+        """
+        if self._attr_target_temperature is None:
+            return
+
+        # Get current TRV state
+        trv_state = self.hass.states.get(self._trv_entity)
+        if not trv_state:
+            _LOGGER.debug(
+                "%s: Startup sync skipped - TRV not available",
+                self._attr_name,
+            )
+            return
+
+        trv_target = trv_state.attributes.get("temperature")
+        trv_mode = trv_state.state
+
+        # Check if sync is needed
+        needs_temp_sync = (
+            trv_target is None
+            or abs(trv_target - self._attr_target_temperature) > 0.1
+        )
+        needs_mode_sync = trv_mode not in (HVACMode.HEAT, "heat")
+
+        if not needs_temp_sync and not needs_mode_sync:
+            _LOGGER.debug(
+                "%s: Startup sync not needed - TRV already at %.1f°C in %s mode",
+                self._attr_name,
+                trv_target,
+                trv_mode,
+            )
+            return
+
+        _LOGGER.info(
+            "%s: Startup sync - TRV target %.1f°C -> %.1f°C, mode %s -> heat",
+            self._attr_name,
+            trv_target or 0,
+            self._attr_target_temperature,
+            trv_mode,
+        )
+
+        # Try to use room state machine's MQTT-first approach if available
+        room_sm = self._get_room_state_machine()
+        if room_sm and room_sm._mqtt_control_available:
+            await room_sm._async_set_trv_target_temp(self._attr_target_temperature)
+            _LOGGER.debug(
+                "%s: Startup sync used room state machine MQTT control",
+                self._attr_name,
+            )
+        else:
+            # Fallback to HA service
+            await self.hass.services.async_call(
+                CLIMATE_DOMAIN,
+                "set_temperature",
+                {
+                    ATTR_ENTITY_ID: self._trv_entity,
+                    ATTR_TEMPERATURE: self._attr_target_temperature,
+                },
+                blocking=True,
+            )
+
+        # Ensure TRV is in heat mode (not off)
+        if needs_mode_sync:
+            await self.hass.services.async_call(
+                CLIMATE_DOMAIN,
+                "set_hvac_mode",
+                {
+                    ATTR_ENTITY_ID: self._trv_entity,
+                    "hvac_mode": HVACMode.HEAT,
+                },
+                blocking=True,
+            )
+            _LOGGER.info(
+                "%s: Startup sync set TRV to heat mode",
+                self._attr_name,
+            )
+
+    def _get_room_state_machine(self):
+        """Get the room state machine for this climate entity."""
+        if DOMAIN not in self.hass.data:
+            return None
+        if self._entry_id not in self.hass.data[DOMAIN]:
+            return None
+
+        coordinators = self.hass.data[DOMAIN][self._entry_id].get("coordinators", {})
+        zone_coordinator = coordinators.get(self._zone_name)
+
+        if not zone_coordinator:
+            return None
+
+        for room in zone_coordinator.rooms:
+            if room.climate_entity == self._trv_entity:
+                return room
+
+        return None
 
     @property
     def hvac_action(self) -> HVACAction:

@@ -11,13 +11,13 @@ import json
 
 from homeassistant.components.climate import (
     DOMAIN as CLIMATE_DOMAIN,
-    SERVICE_SET_HVAC_MODE,
-    SERVICE_TURN_OFF,
-    HVACMode,
+    SERVICE_SET_TEMPERATURE,
 )
 from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
 from homeassistant.components.select import DOMAIN as SELECT_DOMAIN
-from homeassistant.const import ATTR_ENTITY_ID, STATE_ON
+from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE, STATE_ON
+
+from .const import FROST_PROTECTION_TEMP
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -69,6 +69,7 @@ class RoomStateMachine:
         self._is_on = False
         self._overheated = False
         self._trv_turned_off_for_window = False  # Track if we turned off TRV for window
+        self._saved_target_temp: float | None = None  # Target temp before frost protection
 
         # Calibration sync tracking
         self._calibration_entity: str | None = None
@@ -280,16 +281,16 @@ class RoomStateMachine:
         self._window_open_confirmed = True
         self._trv_turned_off_for_window = True
         _LOGGER.info(
-            "%s: Window open confirmed after %d second delay, turning off TRV",
+            "%s: Window open confirmed after %d second delay, setting frost protection",
             self.room_name,
             self.window_delay,
         )
 
-        # Turn off TRV using best available method
-        await self._async_turn_off_trv()
+        # Set TRV to frost protection temp (never turn off TRVs)
+        await self._async_set_frost_protection()
 
     async def _async_restore_trv_after_window(self) -> None:
-        """Restore TRV to HEAT mode after window closes."""
+        """Restore TRV target temperature after window closes."""
         # Don't restore if room is currently overheated
         if self._overheated:
             _LOGGER.info(
@@ -298,8 +299,8 @@ class RoomStateMachine:
             )
             return
 
-        # Turn on TRV using best available method
-        await self._async_turn_on_trv()
+        # Restore TRV target temperature
+        await self._async_restore_target_temp()
 
     async def _async_discover_sync_entities(self) -> None:
         """Discover calibration or external temp entities for this TRV."""
@@ -908,33 +909,79 @@ class RoomStateMachine:
             )
             return False
 
-    async def _async_turn_off_trv(self) -> None:
-        """Turn off TRV using best available method."""
-        # Try MQTT first for more reliable control
-        if await self._async_set_trv_mode_mqtt("off"):
-            return
+    async def _async_set_frost_protection(self) -> None:
+        """Set TRV to frost protection temp instead of turning off.
 
-        # Fallback to Home Assistant service
-        await self.hass.services.async_call(
-            CLIMATE_DOMAIN,
-            SERVICE_TURN_OFF,
-            {ATTR_ENTITY_ID: self.climate_entity},
-            blocking=True,
+        TRVs should always stay in heat mode. To disable heating, we set
+        a low target temperature rather than turning off the device.
+        """
+        # Save current target temp so we can restore it later
+        if self._saved_target_temp is None and self._target_temp is not None:
+            self._saved_target_temp = self._target_temp
+            _LOGGER.debug(
+                "%s: Saved target temp %.1f°C before frost protection",
+                self.room_name,
+                self._saved_target_temp,
+            )
+
+        # Set to frost protection temp via MQTT or HA service
+        await self._async_set_trv_target_temp(FROST_PROTECTION_TEMP)
+        _LOGGER.info(
+            "%s: Set TRV to frost protection (%.1f°C)",
+            self.room_name,
+            FROST_PROTECTION_TEMP,
         )
 
-    async def _async_turn_on_trv(self) -> None:
-        """Turn on TRV (set to heat mode) using best available method."""
-        # Try MQTT first for more reliable control
-        if await self._async_set_trv_mode_mqtt("heat"):
+    async def _async_restore_target_temp(self) -> None:
+        """Restore TRV target temperature after frost protection ends."""
+        if self._saved_target_temp is None:
+            _LOGGER.debug(
+                "%s: No saved target temp to restore",
+                self.room_name,
+            )
             return
+
+        await self._async_set_trv_target_temp(self._saved_target_temp)
+        _LOGGER.info(
+            "%s: Restored TRV target to %.1f°C",
+            self.room_name,
+            self._saved_target_temp,
+        )
+        self._saved_target_temp = None
+
+    async def _async_set_trv_target_temp(self, temperature: float) -> None:
+        """Set TRV target temperature using best available method."""
+        # Try MQTT first for more reliable control
+        if self._mqtt_control_available and self._mqtt_friendly_name:
+            try:
+                await self.hass.services.async_call(
+                    "mqtt",
+                    "publish",
+                    {
+                        "topic": f"zigbee2mqtt/{self._mqtt_friendly_name}/set",
+                        "payload": json.dumps({"occupied_heating_setpoint": temperature}),
+                    },
+                    blocking=True,
+                )
+                _LOGGER.debug(
+                    "%s: [MQTT] Set target temp to %.1f°C",
+                    self.room_name,
+                    temperature,
+                )
+                return
+            except Exception:
+                _LOGGER.exception(
+                    "%s: Failed to set target temp via MQTT, falling back to HA service",
+                    self.room_name,
+                )
 
         # Fallback to Home Assistant service
         await self.hass.services.async_call(
             CLIMATE_DOMAIN,
-            SERVICE_SET_HVAC_MODE,
+            SERVICE_SET_TEMPERATURE,
             {
                 ATTR_ENTITY_ID: self.climate_entity,
-                "hvac_mode": HVACMode.HEAT,
+                ATTR_TEMPERATURE: temperature,
             },
             blocking=True,
         )
@@ -1106,7 +1153,7 @@ class RoomStateMachine:
         return self._overheated
 
     async def _async_check_overheat(self, was_overheated: bool) -> None:
-        """Check if room is overheating and turn off TRV if needed."""
+        """Check if room is overheating and set frost protection if needed."""
         if self._current_temp is None or self._target_temp is None:
             self._overheated = False
             return
@@ -1118,7 +1165,7 @@ class RoomStateMachine:
             if not was_overheated:
                 self._overheated = True
                 _LOGGER.info(
-                    "%s: OVERHEAT - Current: %.1f°C >= Limit: %.1f°C (Target: %.1f°C + %.1f°C), turning off TRV",
+                    "%s: OVERHEAT - Current: %.1f°C >= Limit: %.1f°C (Target: %.1f°C + %.1f°C), setting frost protection",
                     self.room_name,
                     self._current_temp,
                     overheat_limit,
@@ -1126,20 +1173,20 @@ class RoomStateMachine:
                     self.overheat_threshold,
                 )
 
-                # Turn off TRV using best available method
-                await self._async_turn_off_trv()
+                # Set TRV to frost protection (never turn off TRVs)
+                await self._async_set_frost_protection()
         elif was_overheated:
-            # Temperature dropped below overheat limit - turn TRV back on
+            # Temperature dropped below overheat limit - restore target temp
             self._overheated = False
             _LOGGER.info(
-                "%s: OVERHEAT CLEARED - Temp %.1f°C < Limit %.1f°C, turning TRV back on",
+                "%s: OVERHEAT CLEARED - Temp %.1f°C < Limit %.1f°C, restoring target temp",
                 self.room_name,
                 self._current_temp,
                 overheat_limit,
             )
 
-            # Turn on TRV using best available method
-            await self._async_turn_on_trv()
+            # Restore TRV target temperature
+            await self._async_restore_target_temp()
 
     async def _async_restore_state(self) -> None:
         """Restore state from persistent storage."""
