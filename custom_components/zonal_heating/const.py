@@ -27,6 +27,7 @@ CONF_PERSON_ENTITIES = "person_entities"
 CONF_AWAY_TEMPERATURE = "away_temperature"
 CONF_AWAY_MODE_DELAY = "away_mode_delay"
 CONF_OVERHEAT_THRESHOLD = "overheat_threshold"
+CONF_CALIBRATION_SYNC = "calibration_sync"
 
 # Default values
 DEFAULT_TEMP_DIFFERENTIAL = 0.5  # °C below target to trigger heat
@@ -37,6 +38,7 @@ DEFAULT_AWAY_TEMPERATURE = 16.0  # °C temperature when all away
 DEFAULT_AWAY_MODE_DELAY = 10  # Minutes to wait before activating away mode
 DEFAULT_OVERHEAT_THRESHOLD = 1.0  # °C above target to turn off TRV
 DEFAULT_SENSOR_STALE_THRESHOLD = 3.0  # °C difference to consider external sensor stale
+DEFAULT_CALIBRATION_SYNC = False  # Sync external temp to TRV via calibration offset
 
 # Update intervals
 UPDATE_INTERVAL_ZONE_EVAL = 30  # Seconds between zone evaluations

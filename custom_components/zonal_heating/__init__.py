@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from .const import (
     CONF_AWAY_MODE_DELAY,
     CONF_AWAY_TEMPERATURE,
+    CONF_CALIBRATION_SYNC,
     CONF_MIN_CYCLE_TIME,
     CONF_OVERHEAT_THRESHOLD,
     CONF_PERSON_ENTITIES,
@@ -26,6 +27,7 @@ from .const import (
     CONF_ZONES,
     DEFAULT_AWAY_MODE_DELAY,
     DEFAULT_AWAY_TEMPERATURE,
+    DEFAULT_CALIBRATION_SYNC,
     DEFAULT_MIN_CYCLE_TIME,
     DEFAULT_OVERHEAT_THRESHOLD,
     DEFAULT_SENSOR_STALE_THRESHOLD,
@@ -93,6 +95,7 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
     person_entities = settings.get(CONF_PERSON_ENTITIES, [])
     away_temperature = settings.get(CONF_AWAY_TEMPERATURE, DEFAULT_AWAY_TEMPERATURE)
     away_mode_delay = settings.get(CONF_AWAY_MODE_DELAY, DEFAULT_AWAY_MODE_DELAY)
+    calibration_sync = settings.get(CONF_CALIBRATION_SYNC, DEFAULT_CALIBRATION_SYNC)
 
     for zone_idx, zone in enumerate(zones):
         zone_name = zone.get("name", f"Zone {zone_idx}")
@@ -120,6 +123,7 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
                 overheat_threshold=overheat_threshold,
                 temp_sensor=temp_sensor,
                 stale_sensor_threshold=DEFAULT_SENSOR_STALE_THRESHOLD,
+                calibration_sync=calibration_sync,
             )
             room_state_machines.append(room_sm)
 

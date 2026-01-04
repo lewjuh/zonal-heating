@@ -12,6 +12,7 @@ from homeassistant.components.climate import (
     SERVICE_TURN_OFF,
     HVACMode,
 )
+from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
 from homeassistant.const import ATTR_ENTITY_ID, STATE_ON
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
@@ -36,6 +37,7 @@ class RoomStateMachine:
         overheat_threshold: float = 1.0,
         temp_sensor: str | None = None,
         stale_sensor_threshold: float = 3.0,
+        calibration_sync: bool = False,
     ) -> None:
         """Initialize room state machine."""
         self.hass = hass
@@ -47,6 +49,7 @@ class RoomStateMachine:
         self.overheat_threshold = overheat_threshold
         self.temp_sensor = temp_sensor
         self.stale_sensor_threshold = stale_sensor_threshold
+        self.calibration_sync = calibration_sync
 
         # State tracking
         self._window_open = False
@@ -58,6 +61,16 @@ class RoomStateMachine:
         self._overheated = False
         self._using_stale_fallback = False  # True when external sensor appears stale
         self._trv_turned_off_for_window = False  # Track if we turned off TRV for window
+
+        # Calibration sync tracking
+        self._calibration_entity: str | None = None
+        self._last_calibration: float | None = None
+        self._calibration_available = False
+
+        # External temperature sync tracking (some TRVs accept direct temp input)
+        self._external_temp_entity: str | None = None
+        self._last_external_temp_sync: float | None = None
+        self._external_temp_available = False
 
         # Listeners
         self._remove_listeners: list[Callable] = []
@@ -99,6 +112,10 @@ class RoomStateMachine:
                 self.room_name,
                 self.temp_sensor,
             )
+
+        # Discover calibration/external temp entity if calibration sync is enabled
+        if self.calibration_sync and self.temp_sensor:
+            await self._async_discover_sync_entities()
 
         # Initialize state
         await self._async_update_climate_state()
@@ -235,6 +252,194 @@ class RoomStateMachine:
             blocking=True,
         )
 
+    async def _async_discover_sync_entities(self) -> None:
+        """Discover calibration or external temp entities for this TRV."""
+        # Extract the device name from the climate entity
+        # e.g., climate.living_room_trv -> living_room_trv
+        device_name = self.climate_entity.split(".")[-1]
+
+        # First, try external temperature sync (preferred - direct temp input)
+        external_temp_patterns = [
+            f"number.{device_name}_external_measured_room_sensor",
+            f"number.{device_name}_external_temperature",
+            f"number.{device_name}_external_temp_sensor",
+            f"number.{device_name}_room_sensor",
+        ]
+
+        for pattern in external_temp_patterns:
+            state = self.hass.states.get(pattern)
+            if state and state.state not in ("unavailable", "unknown"):
+                self._external_temp_entity = pattern
+                self._external_temp_available = True
+                _LOGGER.info(
+                    "%s: Found external temp sync entity: %s (preferred method)",
+                    self.room_name,
+                    pattern,
+                )
+                return
+
+        # Fall back to calibration offset method
+        calibration_patterns = [
+            f"number.{device_name}_local_temperature_calibration",
+            f"number.{device_name}_temperature_offset",
+            f"number.{device_name}_local_temp_calibration",
+            f"number.{device_name}_calibration",
+            f"number.{device_name}_temp_calibration",
+        ]
+
+        for pattern in calibration_patterns:
+            state = self.hass.states.get(pattern)
+            if state and state.state not in ("unavailable", "unknown"):
+                self._calibration_entity = pattern
+                self._calibration_available = True
+                _LOGGER.info(
+                    "%s: Found calibration entity: %s (fallback method)",
+                    self.room_name,
+                    pattern,
+                )
+                return
+
+        _LOGGER.warning(
+            "%s: Calibration sync enabled but no sync entity found. "
+            "Tried external temp patterns: %s, calibration patterns: %s",
+            self.room_name,
+            ", ".join(external_temp_patterns),
+            ", ".join(calibration_patterns),
+        )
+        self._calibration_available = False
+        self._external_temp_available = False
+
+    async def _async_sync_temperature(
+        self, external_temp: float, trv_temp: float
+    ) -> None:
+        """Sync external temperature to TRV using best available method."""
+        # Prefer direct external temp sync if available
+        if self._external_temp_available:
+            await self._async_sync_external_temp(external_temp)
+        elif self._calibration_available:
+            await self._async_sync_calibration(external_temp, trv_temp)
+
+    async def _async_sync_external_temp(self, external_temp: float) -> None:
+        """Sync external temperature directly to TRV."""
+        if not self._external_temp_available or not self._external_temp_entity:
+            return
+
+        # Only update if temp changed by at least 0.3 degrees
+        if (
+            self._last_external_temp_sync is not None
+            and abs(external_temp - self._last_external_temp_sync) < 0.3
+        ):
+            return
+
+        # Check entity limits
+        ext_state = self.hass.states.get(self._external_temp_entity)
+        if not ext_state:
+            return
+
+        min_temp = ext_state.attributes.get("min", 5)
+        max_temp = ext_state.attributes.get("max", 35)
+
+        # Clamp to valid range
+        clamped_temp = max(min_temp, min(max_temp, external_temp))
+
+        if clamped_temp != external_temp:
+            _LOGGER.debug(
+                "%s: External temp %.1f clamped to %.1f (range: %.1f to %.1f)",
+                self.room_name,
+                external_temp,
+                clamped_temp,
+                min_temp,
+                max_temp,
+            )
+            external_temp = clamped_temp
+
+        try:
+            await self.hass.services.async_call(
+                NUMBER_DOMAIN,
+                "set_value",
+                {
+                    ATTR_ENTITY_ID: self._external_temp_entity,
+                    "value": round(external_temp, 1),
+                },
+                blocking=True,
+            )
+            _LOGGER.info(
+                "%s: Synced external temp to TRV: %.1f",
+                self.room_name,
+                external_temp,
+            )
+            self._last_external_temp_sync = external_temp
+        except Exception:
+            _LOGGER.exception(
+                "%s: Failed to sync external temperature",
+                self.room_name,
+            )
+
+    async def _async_sync_calibration(
+        self, external_temp: float, trv_temp: float
+    ) -> None:
+        """Sync external temperature to TRV via calibration offset."""
+        if not self._calibration_available or not self._calibration_entity:
+            return
+
+        # Calculate the required calibration offset
+        # If external reads 18C and TRV reads 22C, we need offset of -4
+        # This makes TRV "think" it's 18C (22 + (-4) = 18)
+        new_calibration = round(external_temp - trv_temp, 1)
+
+        # Only update if calibration changed by at least 0.5 degrees
+        if (
+            self._last_calibration is not None
+            and abs(new_calibration - self._last_calibration) < 0.5
+        ):
+            return
+
+        # Check calibration entity limits
+        cal_state = self.hass.states.get(self._calibration_entity)
+        if not cal_state:
+            return
+
+        min_cal = cal_state.attributes.get("min", -10)
+        max_cal = cal_state.attributes.get("max", 10)
+
+        # Clamp calibration to valid range
+        clamped_calibration = max(min_cal, min(max_cal, new_calibration))
+
+        if clamped_calibration != new_calibration:
+            _LOGGER.debug(
+                "%s: Calibration %.1f clamped to %.1f (range: %.1f to %.1f)",
+                self.room_name,
+                new_calibration,
+                clamped_calibration,
+                min_cal,
+                max_cal,
+            )
+            new_calibration = clamped_calibration
+
+        try:
+            await self.hass.services.async_call(
+                NUMBER_DOMAIN,
+                "set_value",
+                {
+                    ATTR_ENTITY_ID: self._calibration_entity,
+                    "value": new_calibration,
+                },
+                blocking=True,
+            )
+            _LOGGER.info(
+                "%s: Synced calibration offset to %.1f (External: %.1f, TRV: %.1f)",
+                self.room_name,
+                new_calibration,
+                external_temp,
+                trv_temp,
+            )
+            self._last_calibration = new_calibration
+        except Exception:
+            _LOGGER.exception(
+                "%s: Failed to sync calibration offset",
+                self.room_name,
+            )
+
     async def _async_update_climate_state(self) -> None:
         """Update climate state from entity."""
         state = self.hass.states.get(self.climate_entity)
@@ -286,6 +491,11 @@ class RoomStateMachine:
                                 )
                                 self._using_stale_fallback = False
                             self._current_temp = external_temp
+                            # Sync temperature to TRV when we have valid temps
+                            if self.calibration_sync:
+                                await self._async_sync_temperature(
+                                    external_temp, trv_temp
+                                )
                     else:
                         self._current_temp = external_temp
                 except (ValueError, TypeError):

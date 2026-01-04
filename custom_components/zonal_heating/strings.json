@@ -51,7 +51,8 @@
                     "window_delay": "Window Open Delay (seconds)",
                     "person_entities": "Person Entities (Optional)",
                     "away_temperature": "Away Mode Temperature (°C)",
-                    "away_mode_delay": "Away Mode Delay (minutes)"
+                    "away_mode_delay": "Away Mode Delay (minutes)",
+                    "calibration_sync": "Sync External Temp to TRV"
                 },
                 "data_description": {
                     "temp_differential": "How far below target temperature before requesting heat (e.g., 0.5°C means heat when 0.5° below target)",
@@ -60,7 +61,8 @@
                     "window_delay": "Wait time after window opens before pausing heating (prevents false triggers)",
                     "person_entities": "People to track for away mode - when all are away, heating enters low power mode",
                     "away_temperature": "Temperature to set all TRVs to when everyone is away (default: 16°C)",
-                    "away_mode_delay": "Wait time after everyone leaves before activating away mode - cancels if anyone returns (default: 10 minutes)"
+                    "away_mode_delay": "Wait time after everyone leaves before activating away mode - cancels if anyone returns (default: 10 minutes)",
+                    "calibration_sync": "Sync external sensor temperature to TRV via calibration offset or direct input. Forces TRV to use external sensor reading."
                 }
             },
             "reconfigure": {
@@ -147,7 +149,8 @@
                     "window_delay": "[%key:component::zonal_heating::config::step::settings::data::window_delay%]",
                     "person_entities": "[%key:component::zonal_heating::config::step::settings::data::person_entities%]",
                     "away_temperature": "[%key:component::zonal_heating::config::step::settings::data::away_temperature%]",
-                    "away_mode_delay": "[%key:component::zonal_heating::config::step::settings::data::away_mode_delay%]"
+                    "away_mode_delay": "[%key:component::zonal_heating::config::step::settings::data::away_mode_delay%]",
+                    "calibration_sync": "[%key:component::zonal_heating::config::step::settings::data::calibration_sync%]"
                 },
                 "data_description": {
                     "temp_differential": "[%key:component::zonal_heating::config::step::settings::data_description::temp_differential%]",
@@ -156,7 +159,8 @@
                     "window_delay": "[%key:component::zonal_heating::config::step::settings::data_description::window_delay%]",
                     "person_entities": "[%key:component::zonal_heating::config::step::settings::data_description::person_entities%]",
                     "away_temperature": "[%key:component::zonal_heating::config::step::settings::data_description::away_temperature%]",
-                    "away_mode_delay": "[%key:component::zonal_heating::config::step::settings::data_description::away_mode_delay%]"
+                    "away_mode_delay": "[%key:component::zonal_heating::config::step::settings::data_description::away_mode_delay%]",
+                    "calibration_sync": "[%key:component::zonal_heating::config::step::settings::data_description::calibration_sync%]"
                 }
             }
         }

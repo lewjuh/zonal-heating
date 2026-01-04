@@ -20,6 +20,7 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_AWAY_MODE_DELAY,
     CONF_AWAY_TEMPERATURE,
+    CONF_CALIBRATION_SYNC,
     CONF_MIN_CYCLE_TIME,
     CONF_OVERHEAT_THRESHOLD,
     CONF_PERSON_ENTITIES,
@@ -36,6 +37,7 @@ from .const import (
     CONF_ZONES,
     DEFAULT_AWAY_MODE_DELAY,
     DEFAULT_AWAY_TEMPERATURE,
+    DEFAULT_CALIBRATION_SYNC,
     DEFAULT_MIN_CYCLE_TIME,
     DEFAULT_OVERHEAT_THRESHOLD,
     DEFAULT_PRIORITY,
@@ -243,6 +245,9 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_PERSON_ENTITIES: user_input.get(CONF_PERSON_ENTITIES, []),
                     CONF_AWAY_TEMPERATURE: user_input[CONF_AWAY_TEMPERATURE],
                     CONF_AWAY_MODE_DELAY: user_input[CONF_AWAY_MODE_DELAY],
+                    CONF_CALIBRATION_SYNC: user_input.get(
+                        CONF_CALIBRATION_SYNC, DEFAULT_CALIBRATION_SYNC
+                    ),
                 },
             }
 
@@ -285,6 +290,10 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_AWAY_MODE_DELAY,
                         default=DEFAULT_AWAY_MODE_DELAY,
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=120)),
+                    vol.Optional(
+                        CONF_CALIBRATION_SYNC,
+                        default=DEFAULT_CALIBRATION_SYNC,
+                    ): bool,
                 }
             ),
         )
@@ -580,6 +589,9 @@ class ZonalHeatingOptionsFlow(config_entries.OptionsFlow):
                     CONF_PERSON_ENTITIES: user_input.get(CONF_PERSON_ENTITIES, []),
                     CONF_AWAY_TEMPERATURE: user_input[CONF_AWAY_TEMPERATURE],
                     CONF_AWAY_MODE_DELAY: user_input[CONF_AWAY_MODE_DELAY],
+                    CONF_CALIBRATION_SYNC: user_input.get(
+                        CONF_CALIBRATION_SYNC, DEFAULT_CALIBRATION_SYNC
+                    ),
                 },
             )
 
@@ -639,6 +651,12 @@ class ZonalHeatingOptionsFlow(config_entries.OptionsFlow):
                             CONF_AWAY_MODE_DELAY, DEFAULT_AWAY_MODE_DELAY
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=120)),
+                    vol.Optional(
+                        CONF_CALIBRATION_SYNC,
+                        default=current_settings.get(
+                            CONF_CALIBRATION_SYNC, DEFAULT_CALIBRATION_SYNC
+                        ),
+                    ): bool,
                 }
             ),
         )
