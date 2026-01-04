@@ -84,15 +84,15 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def _async_wait_for_entity(
-    hass: HomeAssistant, entity_id: str, timeout: float = 30
+    hass: HomeAssistant, entity_id: str, timeout: float = 5
 ) -> bool:
-    """Wait for an entity to become available."""
+    """Wait briefly for an entity to become available."""
     start_time = asyncio.get_event_loop().time()
     while (asyncio.get_event_loop().time() - start_time) < timeout:
         state = hass.states.get(entity_id)
-        if state and state.state not in ("unavailable", "unknown"):
+        if state:
             return True
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.2)
     return False
 
 
@@ -124,16 +124,11 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
         zone_name = zone.get("name", f"Zone {zone_idx}")
         zone_climate = zone.get(CONF_ZONE_THERMOSTAT)
 
-        # Wait for zone thermostat entity to be available
+        # Brief wait for zone thermostat entity (state listeners handle late arrivals)
         if zone_climate:
-            _LOGGER.debug(
-                "Waiting for zone thermostat entity %s to become available",
-                zone_climate,
-            )
-            if not await _async_wait_for_entity(hass, zone_climate, timeout=60):
-                _LOGGER.warning(
-                    "Zone %s: Zone thermostat %s not available after 60s, "
-                    "will retry when entity becomes available",
+            if not await _async_wait_for_entity(hass, zone_climate, timeout=5):
+                _LOGGER.debug(
+                    "Zone %s: Zone thermostat %s not yet available, will use state listeners",
                     zone_name,
                     zone_climate,
                 )
@@ -150,11 +145,10 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
                 _LOGGER.warning("Room %s has no TRV entity, skipping", room_name)
                 continue
 
-            # Wait for TRV entity to be available
-            if not await _async_wait_for_entity(hass, trv_entity, timeout=30):
-                _LOGGER.warning(
-                    "Room %s: TRV entity %s not available after 30s, "
-                    "will retry when entity becomes available",
+            # Brief wait for TRV entity (state listeners handle late arrivals)
+            if not await _async_wait_for_entity(hass, trv_entity, timeout=3):
+                _LOGGER.debug(
+                    "Room %s: TRV %s not yet available, will use state listeners",
                     room_name,
                     trv_entity,
                 )
