@@ -44,7 +44,6 @@ class RoomStateMachine:
         temp_differential: float = 0.5,
         overheat_threshold: float = 1.0,
         temp_sensor: str | None = None,
-        stale_sensor_threshold: float = 3.0,
         calibration_sync: bool = False,
         storage: "ZonalHeatingStorage | None" = None,
     ) -> None:
@@ -57,7 +56,6 @@ class RoomStateMachine:
         self.temp_differential = temp_differential
         self.overheat_threshold = overheat_threshold
         self.temp_sensor = temp_sensor
-        self.stale_sensor_threshold = stale_sensor_threshold
         self.calibration_sync = calibration_sync
         self._storage = storage
 
@@ -70,7 +68,6 @@ class RoomStateMachine:
         self._target_temp: float | None = None
         self._is_on = False
         self._overheated = False
-        self._using_stale_fallback = False  # True when external sensor appears stale
         self._trv_turned_off_for_window = False  # Track if we turned off TRV for window
 
         # Calibration sync tracking
@@ -966,65 +963,21 @@ class RoomStateMachine:
             if temp_state and temp_state.state not in ("unavailable", "unknown"):
                 try:
                     external_temp = float(temp_state.state)
+                    self._current_temp = external_temp
 
-                    # Bug fix: Detect stale sensor data by comparing with TRV temp
-                    if trv_temp is not None:
-                        temp_difference = abs(external_temp - trv_temp)
-                        if temp_difference > self.stale_sensor_threshold:
-                            if not self._using_stale_fallback:
-                                _LOGGER.warning(
-                                    "%s: External sensor appears stale! "
-                                    "Sensor: %.1f°C, TRV: %.1f°C (diff: %.1f°C > threshold: %.1f°C). "
-                                    "Falling back to TRV temperature.",
-                                    self.room_name,
-                                    external_temp,
-                                    trv_temp,
-                                    temp_difference,
-                                    self.stale_sensor_threshold,
-                                )
-                                self._using_stale_fallback = True
-                            self._current_temp = trv_temp
-                        else:
-                            if self._using_stale_fallback:
-                                _LOGGER.info(
-                                    "%s: External sensor recovered, resuming use "
-                                    "(Sensor: %.1f°C, TRV: %.1f°C)",
-                                    self.room_name,
-                                    external_temp,
-                                    trv_temp,
-                                )
-                                self._using_stale_fallback = False
-                            self._current_temp = external_temp
-                            # Only sync to TRV on external sensor events, not startup
-                            if self.calibration_sync and sync_calibration:
-                                _LOGGER.debug(
-                                    "%s: Triggering temp sync (external: %.1f, trv: %.1f)",
-                                    self.room_name,
-                                    external_temp,
-                                    trv_temp,
-                                )
-                                await self._async_sync_temperature(
-                                    external_temp, trv_temp
-                                )
-                            elif self.calibration_sync and not sync_calibration:
-                                _LOGGER.debug(
-                                    "%s: Calibration sync enabled but sync_calibration=False (startup/non-sensor event)",
-                                    self.room_name,
-                                )
-                    else:
-                        self._current_temp = external_temp
+                    # Sync to TRV on external sensor events
+                    if self.calibration_sync and sync_calibration and trv_temp is not None:
+                        _LOGGER.debug(
+                            "%s: Triggering temp sync (external: %.1f, trv: %.1f)",
+                            self.room_name,
+                            external_temp,
+                            trv_temp,
+                        )
+                        await self._async_sync_temperature(external_temp, trv_temp)
                 except (ValueError, TypeError):
-                    if self._using_stale_fallback:
-                        self._using_stale_fallback = False
                     self._current_temp = trv_temp
             else:
-                # Sensor unavailable - reset stale flag and use TRV
-                if self._using_stale_fallback:
-                    _LOGGER.info(
-                        "%s: External sensor unavailable, resetting stale fallback",
-                        self.room_name,
-                    )
-                    self._using_stale_fallback = False
+                # External sensor unavailable - use TRV as fallback
                 self._current_temp = trv_temp
         else:
             self._current_temp = trv_temp
