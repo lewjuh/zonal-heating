@@ -402,10 +402,25 @@ class RoomStateMachine:
         if not self._calibration_available or not self._calibration_entity:
             return
 
-        # Calculate the required calibration offset
-        # If external reads 18C and TRV reads 22C, we need offset of -4
-        # This makes TRV "think" it's 18C (22 + (-4) = 18)
-        new_calibration = round(external_temp - trv_temp, 1)
+        # Get current calibration to calculate raw TRV temperature
+        cal_state = self.hass.states.get(self._calibration_entity)
+        if not cal_state or cal_state.state in ("unavailable", "unknown"):
+            return
+
+        try:
+            current_calibration = float(cal_state.state)
+        except (ValueError, TypeError):
+            current_calibration = 0.0
+
+        # IMPORTANT: The TRV's reported temperature already includes the calibration offset.
+        # To avoid feedback oscillation, we must calculate based on the RAW internal temp.
+        # raw_temp = reported_temp - current_calibration
+        raw_trv_temp = trv_temp - current_calibration
+
+        # Calculate the required calibration offset based on RAW temperature
+        # If external reads 18C and raw TRV reads 22C, we need offset of -4
+        # This makes TRV report: 22 + (-4) = 18C (matching external)
+        new_calibration = round(external_temp - raw_trv_temp, 1)
 
         # Only update if calibration changed by at least 0.2 degrees
         if (
@@ -414,11 +429,7 @@ class RoomStateMachine:
         ):
             return
 
-        # Check calibration entity limits
-        cal_state = self.hass.states.get(self._calibration_entity)
-        if not cal_state:
-            return
-
+        # Get calibration entity limits
         min_cal = cal_state.attributes.get("min", -10)
         max_cal = cal_state.attributes.get("max", 10)
 
@@ -447,11 +458,12 @@ class RoomStateMachine:
                 blocking=True,
             )
             _LOGGER.info(
-                "%s: Synced calibration offset to %.1f (External: %.1f, TRV: %.1f)",
+                "%s: Synced calibration offset to %.1f (External: %.1f, Raw TRV: %.1f, Prev cal: %.1f)",
                 self.room_name,
                 new_calibration,
                 external_temp,
-                trv_temp,
+                raw_trv_temp,
+                current_calibration,
             )
             self._last_calibration = new_calibration
         except Exception:
