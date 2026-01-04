@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import logging
 from typing import TYPE_CHECKING
 
@@ -19,6 +20,8 @@ from homeassistant.helpers.event import async_track_state_change_event
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from .storage import ZonalHeatingStorage
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +41,7 @@ class RoomStateMachine:
         temp_sensor: str | None = None,
         stale_sensor_threshold: float = 3.0,
         calibration_sync: bool = False,
+        storage: "ZonalHeatingStorage | None" = None,
     ) -> None:
         """Initialize room state machine."""
         self.hass = hass
@@ -50,11 +54,13 @@ class RoomStateMachine:
         self.temp_sensor = temp_sensor
         self.stale_sensor_threshold = stale_sensor_threshold
         self.calibration_sync = calibration_sync
+        self._storage = storage
 
         # State tracking
         self._window_open = False
         self._window_open_confirmed = False  # True after delay expires
         self._window_timer: asyncio.TimerHandle | None = None
+        self._window_timer_started: datetime | None = None
         self._current_temp: float | None = None
         self._target_temp: float | None = None
         self._is_on = False
@@ -78,6 +84,9 @@ class RoomStateMachine:
     async def async_start(self) -> None:
         """Start the room state machine."""
         _LOGGER.debug("Starting room state machine for %s", self.room_name)
+
+        # Restore previous state if available
+        await self._async_restore_state()
 
         # Track climate entity changes
         self._remove_listeners.append(
@@ -121,10 +130,10 @@ class RoomStateMachine:
         await self._async_update_climate_state()
         self._update_window_state()
 
-        # Bug fix: If window is already open on startup, start the confirmation timer
-        if self._window_open:
+        # Start window timer if window is open and not already confirmed
+        if self._window_open and not self._window_open_confirmed:
             _LOGGER.info(
-                "%s: Window already open on startup, starting %ds confirmation timer",
+                "%s: Window open on startup, starting %ds confirmation timer",
                 self.room_name,
                 self.window_delay,
             )
@@ -132,6 +141,9 @@ class RoomStateMachine:
 
     async def async_stop(self) -> None:
         """Stop the room state machine."""
+        # Save state before stopping
+        await self._async_save_state()
+
         for remove_listener in self._remove_listeners:
             remove_listener()
         self._remove_listeners.clear()
@@ -148,7 +160,9 @@ class RoomStateMachine:
     @callback
     def _async_temp_sensor_changed(self, event: Event) -> None:
         """Handle external temperature sensor state changes."""
-        self.hass.async_create_task(self._async_update_climate_state())
+        self.hass.async_create_task(
+            self._async_update_climate_state(sync_calibration=True)
+        )
 
     @callback
     def _async_window_changed(self, event: Event) -> None:
@@ -187,19 +201,25 @@ class RoomStateMachine:
             for sensor in self.window_sensors
         )
 
-    def _start_window_delay_timer(self) -> None:
+    def _start_window_delay_timer(self, delay_seconds: float | None = None) -> None:
         """Start delay timer before confirming window open and turning off TRV."""
         if self._window_timer:
             self._window_timer.cancel()
 
+        self._window_timer_started = datetime.now()
+
+        # Use provided delay or default
+        if delay_seconds is None:
+            delay_seconds = self.window_delay
+
         _LOGGER.info(
-            "%s: Window opened, will confirm and turn off TRV in %d seconds",
+            "%s: Window opened, will confirm and turn off TRV in %.0f seconds",
             self.room_name,
-            self.window_delay,
+            delay_seconds,
         )
 
         self._window_timer = self.hass.loop.call_later(
-            self.window_delay,
+            delay_seconds,
             lambda: self.hass.async_create_task(self._async_window_delay_expired()),
         )
 
@@ -324,10 +344,10 @@ class RoomStateMachine:
         if not self._external_temp_available or not self._external_temp_entity:
             return
 
-        # Only update if temp changed by at least 0.3 degrees
+        # Only update if temp changed by at least 0.1 degrees
         if (
             self._last_external_temp_sync is not None
-            and abs(external_temp - self._last_external_temp_sync) < 0.3
+            and abs(external_temp - self._last_external_temp_sync) < 0.1
         ):
             return
 
@@ -387,10 +407,10 @@ class RoomStateMachine:
         # This makes TRV "think" it's 18C (22 + (-4) = 18)
         new_calibration = round(external_temp - trv_temp, 1)
 
-        # Only update if calibration changed by at least 0.5 degrees
+        # Only update if calibration changed by at least 0.2 degrees
         if (
             self._last_calibration is not None
-            and abs(new_calibration - self._last_calibration) < 0.5
+            and abs(new_calibration - self._last_calibration) < 0.2
         ):
             return
 
@@ -440,7 +460,9 @@ class RoomStateMachine:
                 self.room_name,
             )
 
-    async def _async_update_climate_state(self) -> None:
+    async def _async_update_climate_state(
+        self, *, sync_calibration: bool = False
+    ) -> None:
         """Update climate state from entity."""
         state = self.hass.states.get(self.climate_entity)
         if not state:
@@ -491,8 +513,8 @@ class RoomStateMachine:
                                 )
                                 self._using_stale_fallback = False
                             self._current_temp = external_temp
-                            # Sync temperature to TRV when we have valid temps
-                            if self.calibration_sync:
+                            # Only sync to TRV on external sensor events, not startup
+                            if self.calibration_sync and sync_calibration:
                                 await self._async_sync_temperature(
                                     external_temp, trv_temp
                                 )
@@ -683,3 +705,83 @@ class RoomStateMachine:
                 },
                 blocking=True,
             )
+
+    async def _async_restore_state(self) -> None:
+        """Restore state from persistent storage."""
+        if self._storage is None:
+            return
+
+        stored = self._storage.get_room_state(self.room_name)
+        if stored is None:
+            return
+
+        # Import here to avoid circular import
+        from .storage import parse_datetime
+
+        # Check if stored state is recent (within 1 hour for rooms)
+        saved_at = parse_datetime(stored.get("saved_at"))
+        if saved_at is None:
+            return
+
+        age_hours = (datetime.now() - saved_at).total_seconds() / 3600
+        if age_hours > 1:
+            _LOGGER.debug(
+                "%s: Stored state too old (%.1f hours), starting fresh",
+                self.room_name,
+                age_hours,
+            )
+            self._storage.clear_room_state(self.room_name)
+            return
+
+        # Restore window-related state
+        self._window_open = stored.get("window_open", False)
+        self._window_open_confirmed = stored.get("window_open_confirmed", False)
+        self._trv_turned_off_for_window = stored.get("trv_turned_off_for_window", False)
+        self._overheated = stored.get("overheated", False)
+
+        _LOGGER.info(
+            "%s: Restored state - window_open=%s, confirmed=%s, trv_off=%s, overheated=%s",
+            self.room_name,
+            self._window_open,
+            self._window_open_confirmed,
+            self._trv_turned_off_for_window,
+            self._overheated,
+        )
+
+        # Restore window timer if it was running
+        timer_remaining = stored.get("window_timer_remaining")
+        if timer_remaining and timer_remaining > 0 and self._window_open:
+            _LOGGER.info(
+                "%s: Restoring window timer with %.0f seconds remaining",
+                self.room_name,
+                timer_remaining,
+            )
+            self._start_window_delay_timer(delay_seconds=timer_remaining)
+
+    async def _async_save_state(self) -> None:
+        """Save current state to persistent storage."""
+        if self._storage is None:
+            return
+
+        # Calculate remaining time on window timer
+        window_timer_remaining = None
+        if self._window_timer and self._window_timer_started:
+            elapsed = (datetime.now() - self._window_timer_started).total_seconds()
+            window_timer_remaining = max(0, self.window_delay - elapsed)
+
+        self._storage.set_room_state(
+            room_name=self.room_name,
+            window_open=self._window_open,
+            window_open_confirmed=self._window_open_confirmed,
+            window_timer_remaining=window_timer_remaining,
+            trv_turned_off_for_window=self._trv_turned_off_for_window,
+            overheated=self._overheated,
+        )
+
+        _LOGGER.debug(
+            "%s: Saved state - window_open=%s, confirmed=%s, timer_remaining=%s",
+            self.room_name,
+            self._window_open,
+            self._window_open_confirmed,
+            window_timer_remaining,
+        )

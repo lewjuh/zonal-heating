@@ -37,6 +37,7 @@ from .const import (
     PLATFORMS,
 )
 from .room_state_machine import RoomStateMachine
+from .storage import ZonalHeatingStorage
 from .zone_state_machine import ZoneStateMachine
 
 _LOGGER = logging.getLogger(__name__)
@@ -49,11 +50,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register the Lovelace card
     await _async_register_card(hass)
 
+    # Initialize persistent storage for this entry
+    storage = ZonalHeatingStorage(hass, entry.entry_id)
+    await storage.async_load()
+
     # Initialize storage for this entry
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
         "zone_states": {},  # Track last zone thermostat states
         "coordinators": {},  # Will hold zone coordinators
+        "storage": storage,  # Persistent storage instance
     }
 
     # Forward setup to climate platform (this creates the entities)
@@ -85,6 +91,9 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
         settings = entry.options
     else:
         settings = entry.data.get(CONF_SETTINGS, {})
+
+    # Get storage instance
+    storage = hass.data[DOMAIN][entry.entry_id]["storage"]
 
     coordinators = hass.data[DOMAIN][entry.entry_id]["coordinators"]
 
@@ -124,6 +133,7 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
                 temp_sensor=temp_sensor,
                 stale_sensor_threshold=DEFAULT_SENSOR_STALE_THRESHOLD,
                 calibration_sync=calibration_sync,
+                storage=storage,
             )
             room_state_machines.append(room_sm)
 
@@ -144,6 +154,7 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
             person_entities=person_entities,
             away_temperature=away_temperature,
             away_mode_delay=away_mode_delay,
+            storage=storage,
         )
 
         await zone_sm.async_start()
@@ -174,10 +185,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.debug("Unloading zonal_heating integration for entry %s", entry.entry_id)
 
-    # Stop all coordinators
+    # Stop all coordinators (this triggers state save in each state machine)
     coordinators = hass.data[DOMAIN][entry.entry_id]["coordinators"]
     for coordinator in coordinators.values():
         await coordinator.async_stop()
+
+    # Save persistent storage
+    storage = hass.data[DOMAIN][entry.entry_id].get("storage")
+    if storage:
+        await storage.async_save()
+        _LOGGER.debug("Saved persistent state for entry %s", entry.entry_id)
 
     # Unload platforms
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):

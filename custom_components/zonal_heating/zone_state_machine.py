@@ -18,6 +18,7 @@ from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .room_state_machine import RoomStateMachine
+from .storage import ZonalHeatingStorage, parse_datetime
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -41,6 +42,7 @@ class ZoneStateMachine:
         person_entities: list[str] | None = None,
         away_temperature: float = 16.0,
         away_mode_delay: int = 10,
+        storage: ZonalHeatingStorage | None = None,
     ) -> None:
         """Initialize zone state machine."""
         self.hass = hass
@@ -51,6 +53,7 @@ class ZoneStateMachine:
         self.person_entities = person_entities or []
         self.away_temperature = away_temperature
         self.away_mode_delay = away_mode_delay
+        self._storage = storage
 
         # State tracking
         self._zone_is_on = False
@@ -68,6 +71,7 @@ class ZoneStateMachine:
 
         # Away mode delay timer
         self._away_mode_timer: asyncio.TimerHandle | None = None
+        self._away_mode_timer_started: datetime | None = None
 
         # Track if we're currently updating zone (to detect external changes)
         self._updating_zone = False
@@ -85,11 +89,20 @@ class ZoneStateMachine:
 
         # Record startup time for grace period
         self._startup_time = datetime.now()
-        _LOGGER.info(
-            "%s: Startup grace period active - min_cycle_time ignored for %d seconds",
-            self.zone_name,
-            STARTUP_GRACE_PERIOD,
-        )
+
+        # Restore previous state if available
+        state_restored = await self._async_restore_state()
+        if state_restored:
+            _LOGGER.info(
+                "%s: State restored from previous session, skipping startup grace period",
+                self.zone_name,
+            )
+        else:
+            _LOGGER.info(
+                "%s: Startup grace period active - min_cycle_time ignored for %d seconds",
+                self.zone_name,
+                STARTUP_GRACE_PERIOD,
+            )
 
         # Start all room state machines
         for room in self.rooms:
@@ -148,6 +161,9 @@ class ZoneStateMachine:
 
     async def async_stop(self) -> None:
         """Stop the zone state machine."""
+        # Save state before stopping
+        await self._async_save_state()
+
         # Cancel any pending retry timer
         if self._retry_timer:
             self._retry_timer.cancel()
@@ -300,21 +316,23 @@ class ZoneStateMachine:
         """Return number of people currently home."""
         return self._people_home_count
 
-    def _start_away_mode_delay_timer(self) -> None:
+    def _start_away_mode_delay_timer(self, delay_seconds: float | None = None) -> None:
         """Start delay timer before activating away mode."""
         if self._away_mode_timer:
             self._away_mode_timer.cancel()
 
         self._away_mode_pending = True
+        self._away_mode_timer_started = datetime.now()
+
+        # Use provided delay or calculate from config
+        if delay_seconds is None:
+            delay_seconds = self.away_mode_delay * 60
 
         _LOGGER.info(
-            "%s: 🏠 Everyone left - will activate away mode in %d minutes",
+            "%s: 🏠 Everyone left - will activate away mode in %.1f minutes",
             self.zone_name,
-            self.away_mode_delay,
+            delay_seconds / 60,
         )
-
-        # Convert minutes to seconds
-        delay_seconds = self.away_mode_delay * 60
 
         self._away_mode_timer = self.hass.loop.call_later(
             delay_seconds,
@@ -674,3 +692,80 @@ class ZoneStateMachine:
             "ON" if turn_on else "OFF",
         )
         _LOGGER.info("🔥" * 30)
+
+    async def _async_restore_state(self) -> bool:
+        """Restore state from persistent storage. Returns True if state was restored."""
+        if self._storage is None:
+            return False
+
+        stored = self._storage.get_zone_state(self.zone_name)
+        if stored is None:
+            return False
+
+        # Check if stored state is recent (within 24 hours)
+        saved_at = parse_datetime(stored.get("saved_at"))
+        if saved_at is None:
+            return False
+
+        age_hours = (datetime.now() - saved_at).total_seconds() / 3600
+        if age_hours > 24:
+            _LOGGER.info(
+                "%s: Stored state too old (%.1f hours), starting fresh",
+                self.zone_name,
+                age_hours,
+            )
+            self._storage.clear_zone_state(self.zone_name)
+            return False
+
+        # Restore zone state
+        self._zone_is_on = stored.get("zone_is_on", False)
+        self._last_zone_change = parse_datetime(stored.get("last_zone_change"))
+
+        _LOGGER.info(
+            "%s: Restored state - zone_is_on=%s, last_change=%s",
+            self.zone_name,
+            self._zone_is_on,
+            self._last_zone_change,
+        )
+
+        # Restore away mode timer if it was pending
+        if stored.get("away_mode_pending") and stored.get("away_mode_timer_remaining"):
+            remaining = stored["away_mode_timer_remaining"]
+            if remaining > 0:
+                _LOGGER.info(
+                    "%s: Restoring away mode timer with %.1f seconds remaining",
+                    self.zone_name,
+                    remaining,
+                )
+                self._start_away_mode_delay_timer(delay_seconds=remaining)
+
+        # If we restored last_zone_change, don't use startup grace period
+        return self._last_zone_change is not None
+
+    async def _async_save_state(self) -> None:
+        """Save current state to persistent storage."""
+        if self._storage is None:
+            return
+
+        # Calculate remaining time on away mode timer
+        away_timer_remaining = None
+        if self._away_mode_pending and self._away_mode_timer_started:
+            elapsed = (datetime.now() - self._away_mode_timer_started).total_seconds()
+            total_delay = self.away_mode_delay * 60
+            away_timer_remaining = max(0, total_delay - elapsed)
+
+        self._storage.set_zone_state(
+            zone_name=self.zone_name,
+            zone_is_on=self._zone_is_on,
+            last_zone_change=self._last_zone_change,
+            away_mode_pending=self._away_mode_pending,
+            away_mode_timer_remaining=away_timer_remaining,
+        )
+
+        _LOGGER.debug(
+            "%s: Saved state - zone_is_on=%s, last_change=%s, away_pending=%s",
+            self.zone_name,
+            self._zone_is_on,
+            self._last_zone_change,
+            self._away_mode_pending,
+        )
