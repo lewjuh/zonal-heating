@@ -14,6 +14,7 @@ from homeassistant.components.climate import (
     HVACMode,
 )
 from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
+from homeassistant.components.select import DOMAIN as SELECT_DOMAIN
 from homeassistant.const import ATTR_ENTITY_ID, STATE_ON
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
@@ -78,6 +79,9 @@ class RoomStateMachine:
         self._last_external_temp_sync: float | None = None
         self._external_temp_available = False
 
+        # Temperature sensor selector (some TRVs need this set to "external")
+        self._temp_sensor_selector: str | None = None
+
         # Listeners
         self._remove_listeners: list[Callable] = []
 
@@ -125,6 +129,9 @@ class RoomStateMachine:
         # Discover calibration/external temp entity if calibration sync is enabled
         if self.calibration_sync and self.temp_sensor:
             await self._async_discover_sync_entities()
+            # Do initial sync to get TRV in sync with external sensor
+            if self._external_temp_available or self._calibration_available:
+                await self._async_initial_sync()
 
         # Initialize state
         await self._async_update_climate_state()
@@ -160,6 +167,13 @@ class RoomStateMachine:
     @callback
     def _async_temp_sensor_changed(self, event: Event) -> None:
         """Handle external temperature sensor state changes."""
+        new_state = event.data.get("new_state")
+        if new_state:
+            _LOGGER.debug(
+                "%s: External sensor changed to %.1f°C (sync will be triggered)",
+                self.room_name,
+                float(new_state.state) if new_state.state not in ("unavailable", "unknown") else 0,
+            )
         self.hass.async_create_task(
             self._async_update_climate_state(sync_calibration=True)
         )
@@ -296,6 +310,8 @@ class RoomStateMachine:
                     self.room_name,
                     pattern,
                 )
+                # Also look for and configure temperature sensor selector
+                await self._async_configure_temp_sensor_selector(device_name)
                 return
 
         # Fall back to calibration offset method
@@ -329,19 +345,153 @@ class RoomStateMachine:
         self._calibration_available = False
         self._external_temp_available = False
 
+    async def _async_configure_temp_sensor_selector(self, device_name: str) -> None:
+        """Find and configure temperature sensor selector to use external sensor."""
+        # Common patterns for temperature sensor selector entity
+        selector_patterns = [
+            f"select.{device_name}_sensor",
+            f"select.{device_name}_temperature_sensor",
+            f"select.{device_name}_temp_sensor",
+            f"select.{device_name}_sensor_mode",
+        ]
+
+        for pattern in selector_patterns:
+            state = self.hass.states.get(pattern)
+            if state and state.state not in ("unavailable", "unknown"):
+                self._temp_sensor_selector = pattern
+                current_mode = state.state.lower()
+
+                # Check if already set to external
+                if "external" in current_mode:
+                    _LOGGER.info(
+                        "%s: Temperature sensor selector %s already set to: %s",
+                        self.room_name,
+                        pattern,
+                        state.state,
+                    )
+                    return
+
+                # Get available options
+                options = state.attributes.get("options", [])
+                _LOGGER.debug(
+                    "%s: Sensor selector options: %s",
+                    self.room_name,
+                    options,
+                )
+
+                # Find an external option
+                external_option = None
+                for option in options:
+                    if "external" in option.lower():
+                        external_option = option
+                        break
+
+                if external_option:
+                    try:
+                        await self.hass.services.async_call(
+                            SELECT_DOMAIN,
+                            "select_option",
+                            {
+                                ATTR_ENTITY_ID: pattern,
+                                "option": external_option,
+                            },
+                            blocking=True,
+                        )
+                        _LOGGER.info(
+                            "%s: Set temperature sensor selector %s to: %s",
+                            self.room_name,
+                            pattern,
+                            external_option,
+                        )
+                    except Exception:
+                        _LOGGER.exception(
+                            "%s: Failed to set temperature sensor selector",
+                            self.room_name,
+                        )
+                else:
+                    _LOGGER.warning(
+                        "%s: Found sensor selector %s but no 'external' option available. Options: %s",
+                        self.room_name,
+                        pattern,
+                        options,
+                    )
+                return
+
+        _LOGGER.debug(
+            "%s: No temperature sensor selector found (tried: %s)",
+            self.room_name,
+            ", ".join(selector_patterns),
+        )
+
+    async def _async_initial_sync(self) -> None:
+        """Perform initial sync to get TRV in sync with external sensor on startup."""
+        # Get external sensor temp
+        if not self.temp_sensor:
+            return
+
+        temp_state = self.hass.states.get(self.temp_sensor)
+        if not temp_state or temp_state.state in ("unavailable", "unknown"):
+            _LOGGER.debug(
+                "%s: Initial sync skipped - external sensor unavailable",
+                self.room_name,
+            )
+            return
+
+        try:
+            external_temp = float(temp_state.state)
+        except (ValueError, TypeError):
+            _LOGGER.debug(
+                "%s: Initial sync skipped - invalid external sensor value: %s",
+                self.room_name,
+                temp_state.state,
+            )
+            return
+
+        # Get TRV temp for calibration calculation
+        climate_state = self.hass.states.get(self.climate_entity)
+        trv_temp = climate_state.attributes.get("current_temperature") if climate_state else None
+
+        _LOGGER.info(
+            "%s: Performing initial sync (external: %.1f°C, TRV: %s)",
+            self.room_name,
+            external_temp,
+            f"{trv_temp:.1f}°C" if trv_temp else "N/A",
+        )
+
+        await self._async_sync_temperature(external_temp, trv_temp or external_temp)
+
     async def _async_sync_temperature(
         self, external_temp: float, trv_temp: float
     ) -> None:
         """Sync external temperature to TRV using best available method."""
+        _LOGGER.debug(
+            "%s: Sync temperature called (external: %.1f, trv: %.1f, ext_available: %s, cal_available: %s)",
+            self.room_name,
+            external_temp,
+            trv_temp,
+            self._external_temp_available,
+            self._calibration_available,
+        )
         # Prefer direct external temp sync if available
         if self._external_temp_available:
             await self._async_sync_external_temp(external_temp)
         elif self._calibration_available:
             await self._async_sync_calibration(external_temp, trv_temp)
+        else:
+            _LOGGER.debug(
+                "%s: No sync method available",
+                self.room_name,
+            )
 
     async def _async_sync_external_temp(self, external_temp: float) -> None:
         """Sync external temperature directly to TRV."""
         if not self._external_temp_available or not self._external_temp_entity:
+            _LOGGER.debug(
+                "%s: External temp sync skipped - not available (entity: %s, available: %s)",
+                self.room_name,
+                self._external_temp_entity,
+                self._external_temp_available,
+            )
             return
 
         # Only update if temp changed by at least 0.1 degrees
@@ -349,6 +499,13 @@ class RoomStateMachine:
             self._last_external_temp_sync is not None
             and abs(external_temp - self._last_external_temp_sync) < 0.1
         ):
+            _LOGGER.debug(
+                "%s: External temp sync skipped - below threshold (current: %.1f, last: %.1f, diff: %.2f)",
+                self.room_name,
+                external_temp,
+                self._last_external_temp_sync,
+                abs(external_temp - self._last_external_temp_sync),
+            )
             return
 
         # Check entity limits
@@ -527,8 +684,19 @@ class RoomStateMachine:
                             self._current_temp = external_temp
                             # Only sync to TRV on external sensor events, not startup
                             if self.calibration_sync and sync_calibration:
+                                _LOGGER.debug(
+                                    "%s: Triggering temp sync (external: %.1f, trv: %.1f)",
+                                    self.room_name,
+                                    external_temp,
+                                    trv_temp,
+                                )
                                 await self._async_sync_temperature(
                                     external_temp, trv_temp
+                                )
+                            elif self.calibration_sync and not sync_calibration:
+                                _LOGGER.debug(
+                                    "%s: Calibration sync enabled but sync_calibration=False (startup/non-sensor event)",
+                                    self.room_name,
                                 )
                     else:
                         self._current_temp = external_temp
