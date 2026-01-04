@@ -7,6 +7,8 @@ from datetime import datetime
 import logging
 from typing import TYPE_CHECKING
 
+import json
+
 from homeassistant.components.climate import (
     DOMAIN as CLIMATE_DOMAIN,
     SERVICE_SET_HVAC_MODE,
@@ -17,6 +19,7 @@ from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
 from homeassistant.components.select import DOMAIN as SELECT_DOMAIN
 from homeassistant.const import ATTR_ENTITY_ID, STATE_ON
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 
@@ -83,6 +86,10 @@ class RoomStateMachine:
         # Temperature sensor selector (some TRVs need this set to "external")
         self._temp_sensor_selector: str | None = None
 
+        # Direct MQTT sync for Zigbee2MQTT devices without exposed entities
+        self._mqtt_friendly_name: str | None = None
+        self._mqtt_calibration_available = False
+
         # Listeners
         self._remove_listeners: list[Callable] = []
 
@@ -129,10 +136,28 @@ class RoomStateMachine:
 
         # Discover calibration/external temp entity if calibration sync is enabled
         if self.calibration_sync and self.temp_sensor:
+            _LOGGER.info(
+                "%s: Calibration sync enabled, discovering sync entities for TRV %s",
+                self.room_name,
+                self.climate_entity,
+            )
             await self._async_discover_sync_entities()
-            # Do initial sync to get TRV in sync with external sensor
-            if self._external_temp_available or self._calibration_available:
-                await self._async_initial_sync()
+            # Schedule forced initial sync after brief delay to ensure entities are ready
+            if self._external_temp_available or self._calibration_available or self._mqtt_calibration_available:
+                self.hass.loop.call_later(
+                    5.0,
+                    lambda: self.hass.async_create_task(self._async_forced_initial_sync()),
+                )
+        elif self.calibration_sync and not self.temp_sensor:
+            _LOGGER.info(
+                "%s: Calibration sync enabled but no external temp sensor configured - skipping",
+                self.room_name,
+            )
+        elif not self.calibration_sync:
+            _LOGGER.debug(
+                "%s: Calibration sync disabled",
+                self.room_name,
+            )
 
         # Initialize state
         await self._async_update_climate_state()
@@ -387,12 +412,16 @@ class RoomStateMachine:
                 )
                 return
 
-        _LOGGER.warning(
-            "%s: Calibration sync enabled but no sync entity found. "
-            "Searched device registry and patterns. TRV: %s",
-            self.room_name,
-            self.climate_entity,
-        )
+        # Fallback: Try direct MQTT for Zigbee2MQTT devices
+        await self._async_try_mqtt_discovery()
+
+        if not self._mqtt_calibration_available:
+            _LOGGER.warning(
+                "%s: Calibration sync enabled but no sync method found. "
+                "Searched device registry, patterns, and MQTT. TRV: %s",
+                self.room_name,
+                self.climate_entity,
+            )
         self._calibration_available = False
         self._external_temp_available = False
 
@@ -506,6 +535,45 @@ class RoomStateMachine:
                 options,
             )
 
+    async def _async_forced_initial_sync(self) -> None:
+        """Force sync external temperature to TRV on startup, bypassing thresholds."""
+        if not self.temp_sensor:
+            return
+
+        temp_state = self.hass.states.get(self.temp_sensor)
+        if not temp_state or temp_state.state in ("unavailable", "unknown"):
+            _LOGGER.debug(
+                "%s: Forced initial sync skipped - external sensor unavailable",
+                self.room_name,
+            )
+            return
+
+        try:
+            external_temp = float(temp_state.state)
+        except (ValueError, TypeError):
+            _LOGGER.debug(
+                "%s: Forced initial sync skipped - invalid external sensor value: %s",
+                self.room_name,
+                temp_state.state,
+            )
+            return
+
+        climate_state = self.hass.states.get(self.climate_entity)
+        trv_temp = climate_state.attributes.get("current_temperature") if climate_state else None
+
+        _LOGGER.info(
+            "%s: Forcing initial sync (external: %.1f°C, TRV: %s)",
+            self.room_name,
+            external_temp,
+            f"{trv_temp:.1f}°C" if trv_temp else "N/A",
+        )
+
+        # Force sync by clearing last sync values (bypasses threshold checks)
+        self._last_external_temp_sync = None
+        self._last_calibration = None
+
+        await self._async_sync_temperature(external_temp, trv_temp or external_temp)
+
     async def _async_initial_sync(self) -> None:
         """Perform initial sync to get TRV in sync with external sensor on startup."""
         # Get external sensor temp
@@ -548,18 +616,21 @@ class RoomStateMachine:
     ) -> None:
         """Sync external temperature to TRV using best available method."""
         _LOGGER.debug(
-            "%s: Sync temperature called (external: %.1f, trv: %.1f, ext_available: %s, cal_available: %s)",
+            "%s: Sync temperature called (external: %.1f, trv: %.1f, ext_available: %s, cal_available: %s, mqtt_available: %s)",
             self.room_name,
             external_temp,
             trv_temp,
             self._external_temp_available,
             self._calibration_available,
+            self._mqtt_calibration_available,
         )
         # Prefer direct external temp sync if available
         if self._external_temp_available:
             await self._async_sync_external_temp(external_temp)
         elif self._calibration_available:
             await self._async_sync_calibration(external_temp, trv_temp)
+        elif self._mqtt_calibration_available:
+            await self._async_sync_mqtt_calibration(external_temp, trv_temp)
         else:
             _LOGGER.debug(
                 "%s: No sync method available",
@@ -709,6 +780,113 @@ class RoomStateMachine:
         except Exception:
             _LOGGER.exception(
                 "%s: Failed to sync calibration offset",
+                self.room_name,
+            )
+
+    async def _async_try_mqtt_discovery(self) -> None:
+        """Try to discover Zigbee2MQTT device for direct MQTT control."""
+        entity_reg = er.async_get(self.hass)
+        device_reg = dr.async_get(self.hass)
+
+        climate_entry = entity_reg.async_get(self.climate_entity)
+        if not climate_entry or not climate_entry.device_id:
+            _LOGGER.debug(
+                "%s: Cannot discover MQTT - no device_id for climate entity",
+                self.room_name,
+            )
+            return
+
+        device = device_reg.async_get(climate_entry.device_id)
+        if not device:
+            return
+
+        # Check if this is a Zigbee2MQTT device by looking at identifiers
+        z2m_friendly_name = None
+        for domain, identifier in device.identifiers:
+            if domain == "mqtt":
+                z2m_friendly_name = identifier
+                break
+
+        if not z2m_friendly_name:
+            _LOGGER.debug(
+                "%s: Device is not a Zigbee2MQTT device (identifiers: %s)",
+                self.room_name,
+                device.identifiers,
+            )
+            return
+
+        # Check if MQTT integration is available
+        if "mqtt" not in self.hass.services.async_services():
+            _LOGGER.debug(
+                "%s: MQTT service not available, cannot use direct MQTT sync",
+                self.room_name,
+            )
+            return
+
+        self._mqtt_friendly_name = z2m_friendly_name
+        self._mqtt_calibration_available = True
+
+        _LOGGER.info(
+            "%s: Found Zigbee2MQTT device '%s' - will use direct MQTT for calibration sync",
+            self.room_name,
+            z2m_friendly_name,
+        )
+
+    async def _async_sync_mqtt_calibration(
+        self, external_temp: float, trv_temp: float
+    ) -> None:
+        """Sync calibration offset directly via MQTT publish."""
+        if not self._mqtt_calibration_available or not self._mqtt_friendly_name:
+            return
+
+        # Get current calibration if possible (check for any existing calibration state)
+        current_calibration = 0.0
+
+        # Try to read current calibration from climate entity attributes
+        climate_state = self.hass.states.get(self.climate_entity)
+        if climate_state:
+            current_calibration = climate_state.attributes.get(
+                "local_temperature_calibration", 0.0
+            ) or 0.0
+
+        # Calculate raw TRV temperature (removing any existing calibration)
+        raw_trv_temp = trv_temp - current_calibration
+
+        # Calculate required calibration offset
+        new_calibration = round(external_temp - raw_trv_temp, 1)
+
+        # Only update if calibration changed by at least 0.2 degrees
+        if (
+            self._last_calibration is not None
+            and abs(new_calibration - self._last_calibration) < 0.2
+        ):
+            return
+
+        # Clamp to typical Zigbee TRV calibration range (-12 to +12 for most devices)
+        new_calibration = max(-12.0, min(12.0, new_calibration))
+
+        try:
+            await self.hass.services.async_call(
+                "mqtt",
+                "publish",
+                {
+                    "topic": f"zigbee2mqtt/{self._mqtt_friendly_name}/set",
+                    "payload": json.dumps({"local_temperature_calibration": new_calibration}),
+                },
+                blocking=True,
+            )
+            _LOGGER.info(
+                "%s: [MQTT] Synced calibration offset to %.1f (External: %.1f, Raw TRV: %.1f, Prev cal: %.1f)",
+                self.room_name,
+                new_calibration,
+                external_temp,
+                raw_trv_temp,
+                current_calibration,
+            )
+            self._last_calibration = new_calibration
+        except Exception:
+            _LOGGER.exception(
+                "%s: Failed to sync calibration via MQTT",
                 self.room_name,
             )
 
