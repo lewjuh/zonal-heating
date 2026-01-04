@@ -89,6 +89,7 @@ class RoomStateMachine:
         # Direct MQTT sync for Zigbee2MQTT devices without exposed entities
         self._mqtt_friendly_name: str | None = None
         self._mqtt_calibration_available = False
+        self._mqtt_control_available = False  # For system_mode control
 
         # Listeners
         self._remove_listeners: list[Callable] = []
@@ -133,6 +134,9 @@ class RoomStateMachine:
                 self.room_name,
                 self.temp_sensor,
             )
+
+        # Always try MQTT discovery for direct device control (bypasses HA quirks)
+        await self._async_try_mqtt_discovery()
 
         # Discover calibration/external temp entity if calibration sync is enabled
         if self.calibration_sync and self.temp_sensor:
@@ -284,13 +288,8 @@ class RoomStateMachine:
             self.window_delay,
         )
 
-        # Turn off TRV
-        await self.hass.services.async_call(
-            CLIMATE_DOMAIN,
-            SERVICE_TURN_OFF,
-            {ATTR_ENTITY_ID: self.climate_entity},
-            blocking=True,
-        )
+        # Turn off TRV using best available method
+        await self._async_turn_off_trv()
 
     async def _async_restore_trv_after_window(self) -> None:
         """Restore TRV to HEAT mode after window closes."""
@@ -302,15 +301,8 @@ class RoomStateMachine:
             )
             return
 
-        await self.hass.services.async_call(
-            CLIMATE_DOMAIN,
-            SERVICE_SET_HVAC_MODE,
-            {
-                ATTR_ENTITY_ID: self.climate_entity,
-                "hvac_mode": HVACMode.HEAT,
-            },
-            blocking=True,
-        )
+        # Turn on TRV using best available method
+        await self._async_turn_on_trv()
 
     async def _async_discover_sync_entities(self) -> None:
         """Discover calibration or external temp entities for this TRV."""
@@ -825,9 +817,10 @@ class RoomStateMachine:
 
         self._mqtt_friendly_name = z2m_friendly_name
         self._mqtt_calibration_available = True
+        self._mqtt_control_available = True
 
         _LOGGER.info(
-            "%s: Found Zigbee2MQTT device '%s' - will use direct MQTT for calibration sync",
+            "%s: Found Zigbee2MQTT device '%s' - will use direct MQTT for control and calibration",
             self.room_name,
             z2m_friendly_name,
         )
@@ -889,6 +882,65 @@ class RoomStateMachine:
                 "%s: Failed to sync calibration via MQTT",
                 self.room_name,
             )
+
+    async def _async_set_trv_mode_mqtt(self, mode: str) -> bool:
+        """Set TRV system_mode directly via MQTT. Returns True if successful."""
+        if not self._mqtt_control_available or not self._mqtt_friendly_name:
+            return False
+
+        try:
+            await self.hass.services.async_call(
+                "mqtt",
+                "publish",
+                {
+                    "topic": f"zigbee2mqtt/{self._mqtt_friendly_name}/set",
+                    "payload": json.dumps({"system_mode": mode}),
+                },
+                blocking=True,
+            )
+            _LOGGER.info(
+                "%s: [MQTT] Set system_mode to '%s'",
+                self.room_name,
+                mode,
+            )
+            return True
+        except Exception:
+            _LOGGER.exception(
+                "%s: Failed to set system_mode via MQTT, falling back to HA service",
+                self.room_name,
+            )
+            return False
+
+    async def _async_turn_off_trv(self) -> None:
+        """Turn off TRV using best available method."""
+        # Try MQTT first for more reliable control
+        if await self._async_set_trv_mode_mqtt("off"):
+            return
+
+        # Fallback to Home Assistant service
+        await self.hass.services.async_call(
+            CLIMATE_DOMAIN,
+            SERVICE_TURN_OFF,
+            {ATTR_ENTITY_ID: self.climate_entity},
+            blocking=True,
+        )
+
+    async def _async_turn_on_trv(self) -> None:
+        """Turn on TRV (set to heat mode) using best available method."""
+        # Try MQTT first for more reliable control
+        if await self._async_set_trv_mode_mqtt("heat"):
+            return
+
+        # Fallback to Home Assistant service
+        await self.hass.services.async_call(
+            CLIMATE_DOMAIN,
+            SERVICE_SET_HVAC_MODE,
+            {
+                ATTR_ENTITY_ID: self.climate_entity,
+                "hvac_mode": HVACMode.HEAT,
+            },
+            blocking=True,
+        )
 
     async def _async_update_climate_state(
         self, *, sync_calibration: bool = False
@@ -1121,12 +1173,8 @@ class RoomStateMachine:
                     self.overheat_threshold,
                 )
 
-                await self.hass.services.async_call(
-                    CLIMATE_DOMAIN,
-                    SERVICE_TURN_OFF,
-                    {ATTR_ENTITY_ID: self.climate_entity},
-                    blocking=True,
-                )
+                # Turn off TRV using best available method
+                await self._async_turn_off_trv()
         elif was_overheated:
             # Temperature dropped below overheat limit - turn TRV back on
             self._overheated = False
@@ -1137,15 +1185,8 @@ class RoomStateMachine:
                 overheat_limit,
             )
 
-            await self.hass.services.async_call(
-                CLIMATE_DOMAIN,
-                SERVICE_SET_HVAC_MODE,
-                {
-                    ATTR_ENTITY_ID: self.climate_entity,
-                    "hvac_mode": HVACMode.HEAT,
-                },
-                blocking=True,
-            )
+            # Turn on TRV using best available method
+            await self._async_turn_on_trv()
 
     async def _async_restore_state(self) -> None:
         """Restore state from persistent storage."""
