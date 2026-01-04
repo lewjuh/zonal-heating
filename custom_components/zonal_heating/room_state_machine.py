@@ -17,6 +17,7 @@ from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
 from homeassistant.components.select import DOMAIN as SELECT_DOMAIN
 from homeassistant.const import ATTR_ENTITY_ID, STATE_ON
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 
 if TYPE_CHECKING:
@@ -288,11 +289,64 @@ class RoomStateMachine:
 
     async def _async_discover_sync_entities(self) -> None:
         """Discover calibration or external temp entities for this TRV."""
-        # Extract the device name from the climate entity
-        # e.g., climate.living_room_trv -> living_room_trv
         device_name = self.climate_entity.split(".")[-1]
 
-        # First, try external temperature sync (preferred - direct temp input)
+        # Try device registry approach first (most reliable)
+        entity_reg = er.async_get(self.hass)
+        climate_entry = entity_reg.async_get(self.climate_entity)
+
+        if climate_entry and climate_entry.device_id:
+            device_id = climate_entry.device_id
+            _LOGGER.debug(
+                "%s: Found device_id %s for TRV, searching for related entities",
+                self.room_name,
+                device_id,
+            )
+
+            # Find all number entities on the same device
+            for entry in entity_reg.entities.values():
+                if entry.device_id != device_id:
+                    continue
+                if entry.domain != NUMBER_DOMAIN:
+                    continue
+
+                entity_id = entry.entity_id
+                entity_name = entity_id.lower()
+
+                # Check for external temperature entity
+                if any(
+                    kw in entity_name
+                    for kw in ["external", "room_sensor", "measured_room"]
+                ):
+                    state = self.hass.states.get(entity_id)
+                    if state and state.state not in ("unavailable", "unknown"):
+                        self._external_temp_entity = entity_id
+                        self._external_temp_available = True
+                        _LOGGER.info(
+                            "%s: Found external temp entity via device registry: %s",
+                            self.room_name,
+                            entity_id,
+                        )
+                        await self._async_configure_temp_sensor_selector(device_name)
+                        return
+
+                # Check for calibration entity
+                if any(
+                    kw in entity_name
+                    for kw in ["calibration", "offset", "local_temp"]
+                ):
+                    state = self.hass.states.get(entity_id)
+                    if state and state.state not in ("unavailable", "unknown"):
+                        self._calibration_entity = entity_id
+                        self._calibration_available = True
+                        _LOGGER.info(
+                            "%s: Found calibration entity via device registry: %s",
+                            self.room_name,
+                            entity_id,
+                        )
+                        return
+
+        # Fallback: try pattern matching with common naming conventions
         external_temp_patterns = [
             f"number.{device_name}_external_measured_room_sensor",
             f"number.{device_name}_external_temperature",
@@ -306,15 +360,13 @@ class RoomStateMachine:
                 self._external_temp_entity = pattern
                 self._external_temp_available = True
                 _LOGGER.info(
-                    "%s: Found external temp sync entity: %s (preferred method)",
+                    "%s: Found external temp sync entity: %s (pattern match)",
                     self.room_name,
                     pattern,
                 )
-                # Also look for and configure temperature sensor selector
                 await self._async_configure_temp_sensor_selector(device_name)
                 return
 
-        # Fall back to calibration offset method
         calibration_patterns = [
             f"number.{device_name}_local_temperature_calibration",
             f"number.{device_name}_temperature_offset",
@@ -329,7 +381,7 @@ class RoomStateMachine:
                 self._calibration_entity = pattern
                 self._calibration_available = True
                 _LOGGER.info(
-                    "%s: Found calibration entity: %s (fallback method)",
+                    "%s: Found calibration entity: %s (pattern match)",
                     self.room_name,
                     pattern,
                 )
@@ -337,91 +389,122 @@ class RoomStateMachine:
 
         _LOGGER.warning(
             "%s: Calibration sync enabled but no sync entity found. "
-            "Tried external temp patterns: %s, calibration patterns: %s",
+            "Searched device registry and patterns. TRV: %s",
             self.room_name,
-            ", ".join(external_temp_patterns),
-            ", ".join(calibration_patterns),
+            self.climate_entity,
         )
         self._calibration_available = False
         self._external_temp_available = False
 
     async def _async_configure_temp_sensor_selector(self, device_name: str) -> None:
         """Find and configure temperature sensor selector to use external sensor."""
-        # Common patterns for temperature sensor selector entity
-        selector_patterns = [
-            f"select.{device_name}_sensor",
-            f"select.{device_name}_temperature_sensor",
-            f"select.{device_name}_temp_sensor",
-            f"select.{device_name}_sensor_mode",
-        ]
+        selector_entity = None
 
-        for pattern in selector_patterns:
-            state = self.hass.states.get(pattern)
-            if state and state.state not in ("unavailable", "unknown"):
-                self._temp_sensor_selector = pattern
-                current_mode = state.state.lower()
+        # Try device registry approach first
+        entity_reg = er.async_get(self.hass)
+        climate_entry = entity_reg.async_get(self.climate_entity)
 
-                # Check if already set to external
-                if "external" in current_mode:
-                    _LOGGER.info(
-                        "%s: Temperature sensor selector %s already set to: %s",
+        if climate_entry and climate_entry.device_id:
+            device_id = climate_entry.device_id
+
+            for entry in entity_reg.entities.values():
+                if entry.device_id != device_id:
+                    continue
+                if entry.domain != SELECT_DOMAIN:
+                    continue
+
+                entity_id = entry.entity_id
+                entity_name = entity_id.lower()
+
+                if any(kw in entity_name for kw in ["sensor", "temperature_sensor"]):
+                    selector_entity = entity_id
+                    _LOGGER.debug(
+                        "%s: Found sensor selector via device registry: %s",
                         self.room_name,
-                        pattern,
-                        state.state,
+                        entity_id,
                     )
-                    return
+                    break
 
-                # Get available options
-                options = state.attributes.get("options", [])
-                _LOGGER.debug(
-                    "%s: Sensor selector options: %s",
-                    self.room_name,
-                    options,
-                )
+        # Fallback to pattern matching
+        if not selector_entity:
+            selector_patterns = [
+                f"select.{device_name}_sensor",
+                f"select.{device_name}_temperature_sensor",
+                f"select.{device_name}_temp_sensor",
+                f"select.{device_name}_sensor_mode",
+            ]
 
-                # Find an external option
-                external_option = None
-                for option in options:
-                    if "external" in option.lower():
-                        external_option = option
-                        break
+            for pattern in selector_patterns:
+                state = self.hass.states.get(pattern)
+                if state and state.state not in ("unavailable", "unknown"):
+                    selector_entity = pattern
+                    break
 
-                if external_option:
-                    try:
-                        await self.hass.services.async_call(
-                            SELECT_DOMAIN,
-                            "select_option",
-                            {
-                                ATTR_ENTITY_ID: pattern,
-                                "option": external_option,
-                            },
-                            blocking=True,
-                        )
-                        _LOGGER.info(
-                            "%s: Set temperature sensor selector %s to: %s",
-                            self.room_name,
-                            pattern,
-                            external_option,
-                        )
-                    except Exception:
-                        _LOGGER.exception(
-                            "%s: Failed to set temperature sensor selector",
-                            self.room_name,
-                        )
-                else:
-                    _LOGGER.warning(
-                        "%s: Found sensor selector %s but no 'external' option available. Options: %s",
-                        self.room_name,
-                        pattern,
-                        options,
-                    )
-                return
+        if not selector_entity:
+            _LOGGER.debug(
+                "%s: No temperature sensor selector found",
+                self.room_name,
+            )
+            return
 
+        state = self.hass.states.get(selector_entity)
+        if not state or state.state in ("unavailable", "unknown"):
+            return
+
+        self._temp_sensor_selector = selector_entity
+        current_mode = state.state.lower()
+
+        if "external" in current_mode:
+            _LOGGER.info(
+                "%s: Temperature sensor selector %s already set to: %s",
+                self.room_name,
+                selector_entity,
+                state.state,
+            )
+            return
+
+        options = state.attributes.get("options", [])
         _LOGGER.debug(
-            "%s: No temperature sensor selector found (tried: %s)",
+            "%s: Sensor selector options: %s",
             self.room_name,
-            ", ".join(selector_patterns),
+            options,
         )
+
+        external_option = None
+        for option in options:
+            if "external" in option.lower():
+                external_option = option
+                break
+
+        if external_option:
+            try:
+                await self.hass.services.async_call(
+                    SELECT_DOMAIN,
+                    "select_option",
+                    {
+                        ATTR_ENTITY_ID: selector_entity,
+                        "option": external_option,
+                    },
+                    blocking=True,
+                )
+                _LOGGER.info(
+                    "%s: Set temperature sensor selector %s to: %s",
+                    self.room_name,
+                    selector_entity,
+                    external_option,
+                )
+            except Exception:
+                _LOGGER.exception(
+                    "%s: Failed to set temperature sensor selector",
+                    self.room_name,
+                )
+        else:
+            _LOGGER.warning(
+                "%s: Found sensor selector %s but no 'external' option available. Options: %s",
+                self.room_name,
+                selector_entity,
+                options,
+            )
 
     async def _async_initial_sync(self) -> None:
         """Perform initial sync to get TRV in sync with external sensor on startup."""
