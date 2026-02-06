@@ -18,6 +18,20 @@ STORAGE_VERSION = 2
 STORAGE_KEY = f"{DOMAIN}.state"
 
 
+class _ZonalHeatingStore(Store):
+    """Store subclass with migration support."""
+
+    async def _async_migrate_func(
+        self, old_major_version: int, old_minor_version: int, old_data: dict
+    ) -> dict:
+        """Migrate stored data from older versions."""
+        if old_major_version == 1:
+            if "schedules" not in old_data:
+                old_data["schedules"] = {}
+            _LOGGER.info("Migrated storage from v%s to v2", old_major_version)
+        return old_data
+
+
 class ZonalHeatingStorage:
     """Handle persistent storage for zonal heating state."""
 
@@ -25,7 +39,7 @@ class ZonalHeatingStorage:
         """Initialise the storage."""
         self.hass = hass
         self.entry_id = entry_id
-        self._store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY}.{entry_id}")
+        self._store = _ZonalHeatingStore(hass, STORAGE_VERSION, f"{STORAGE_KEY}.{entry_id}")
         self._data: dict[str, Any] = {}
 
     async def async_load(self) -> dict[str, Any]:
@@ -33,17 +47,8 @@ class ZonalHeatingStorage:
         data = await self._store.async_load()
         if data is None:
             data = {"zones": {}, "rooms": {}, "schedules": {}}
-        else:
-            data = self._migrate_data(data)
         self._data = data
         _LOGGER.debug("Loaded persistent state: %s", data)
-        return data
-
-    def _migrate_data(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Migrate data from older storage versions."""
-        if "schedules" not in data:
-            data["schedules"] = {}
-            _LOGGER.info("Migrated storage: added schedules section")
         return data
 
     async def async_save(self) -> None:
