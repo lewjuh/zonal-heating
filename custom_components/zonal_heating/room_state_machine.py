@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+import json
 import logging
 from typing import TYPE_CHECKING
-
-import json
 
 from homeassistant.components.climate import (
     DOMAIN as CLIMATE_DOMAIN,
@@ -16,12 +14,13 @@ from homeassistant.components.climate import (
 from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
 from homeassistant.components.select import DOMAIN as SELECT_DOMAIN
 from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE, STATE_ON
-
-from .const import FROST_PROTECTION_TEMP
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.util import dt as dt_util
+
+from .const import FROST_PROTECTION_TEMP
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -141,9 +140,6 @@ class RoomStateMachine:
                 self.temp_sensor,
             )
 
-        # Always try MQTT discovery for direct device control (bypasses HA quirks)
-        await self._async_try_mqtt_discovery()
-
         # Discover calibration/external temp entity if calibration sync is enabled
         if self.calibration_sync and self.temp_sensor:
             _LOGGER.info(
@@ -151,23 +147,21 @@ class RoomStateMachine:
                 self.room_name,
                 self.climate_entity,
             )
+            # _async_discover_sync_entities includes MQTT discovery as a fallback
             await self._async_discover_sync_entities()
-            # Schedule forced initial sync after brief delay to ensure entities are ready
             if self._external_temp_available or self._calibration_available or self._mqtt_calibration_available:
                 self.hass.loop.call_later(
                     5.0,
                     lambda: self.hass.async_create_task(self._async_forced_initial_sync()),
                 )
-        elif self.calibration_sync and not self.temp_sensor:
-            _LOGGER.info(
-                "%s: Calibration sync enabled but no external temp sensor configured - skipping",
-                self.room_name,
-            )
-        elif not self.calibration_sync:
-            _LOGGER.debug(
-                "%s: Calibration sync disabled",
-                self.room_name,
-            )
+        else:
+            # MQTT discovery for direct device control (bypasses HA quirks)
+            await self._async_try_mqtt_discovery()
+            if self.calibration_sync and not self.temp_sensor:
+                _LOGGER.info(
+                    "%s: Calibration sync enabled but no external temp sensor configured - skipping",
+                    self.room_name,
+                )
 
         # Initialize state
         await self._async_update_climate_state()
@@ -256,7 +250,7 @@ class RoomStateMachine:
         if self._window_timer:
             self._window_timer.cancel()
 
-        self._window_timer_started = datetime.now()
+        self._window_timer_started = dt_util.now()
 
         # Use provided delay or default
         if delay_seconds is None:
@@ -573,43 +567,6 @@ class RoomStateMachine:
         # Force sync by clearing last sync values (bypasses threshold checks)
         self._last_external_temp_sync = None
         self._last_calibration = None
-
-        await self._async_sync_temperature(external_temp, trv_temp or external_temp)
-
-    async def _async_initial_sync(self) -> None:
-        """Perform initial sync to get TRV in sync with external sensor on startup."""
-        # Get external sensor temp
-        if not self.temp_sensor:
-            return
-
-        temp_state = self.hass.states.get(self.temp_sensor)
-        if not temp_state or temp_state.state in ("unavailable", "unknown"):
-            _LOGGER.debug(
-                "%s: Initial sync skipped - external sensor unavailable",
-                self.room_name,
-            )
-            return
-
-        try:
-            external_temp = float(temp_state.state)
-        except (ValueError, TypeError):
-            _LOGGER.debug(
-                "%s: Initial sync skipped - invalid external sensor value: %s",
-                self.room_name,
-                temp_state.state,
-            )
-            return
-
-        # Get TRV temp for calibration calculation
-        climate_state = self.hass.states.get(self.climate_entity)
-        trv_temp = climate_state.attributes.get("current_temperature") if climate_state else None
-
-        _LOGGER.info(
-            "%s: Performing initial sync (external: %.1f°C, TRV: %s)",
-            self.room_name,
-            external_temp,
-            f"{trv_temp:.1f}°C" if trv_temp else "N/A",
-        )
 
         await self._async_sync_temperature(external_temp, trv_temp or external_temp)
 
@@ -1087,49 +1044,17 @@ class RoomStateMachine:
     @property
     def needs_heat(self) -> bool:
         """Return True if room needs heat."""
-        # If overheated, definitely don't need more heat
         if self._overheated:
-            _LOGGER.debug("%s: No heat needed - room is overheated", self.room_name)
             return False
-
         if not self._is_on:
-            _LOGGER.debug("%s: No heat needed - climate is OFF", self.room_name)
             return False
-
         if self._window_open_confirmed:
-            _LOGGER.debug(
-                "%s: No heat needed - window is confirmed open", self.room_name
-            )
             return False
-
         if self._current_temp is None or self._target_temp is None:
-            _LOGGER.debug(
-                "%s: No heat needed - missing temperature data", self.room_name
-            )
             return False
 
-        # Room needs heat if current temp is below (target - differential)
         threshold = self._target_temp - self.temp_differential
-        needs_heat = self._current_temp < threshold
-
-        if needs_heat:
-            _LOGGER.debug(
-                "%s: NEEDS HEAT - Current: %.1f°C < Threshold: %.1f°C (Target: %.1f°C - Diff: %.1f°C)",
-                self.room_name,
-                self._current_temp,
-                threshold,
-                self._target_temp,
-                self.temp_differential,
-            )
-        else:
-            _LOGGER.debug(
-                "%s: No heat needed - Current: %.1f°C >= Threshold: %.1f°C",
-                self.room_name,
-                self._current_temp,
-                threshold,
-            )
-
-        return needs_heat
+        return self._current_temp < threshold
 
     @property
     def temperature_deficit(self) -> float:
@@ -1221,7 +1146,7 @@ class RoomStateMachine:
         if saved_at is None:
             return
 
-        age_hours = (datetime.now() - saved_at).total_seconds() / 3600
+        age_hours = (dt_util.now() - saved_at).total_seconds() / 3600
         if age_hours > 1:
             _LOGGER.debug(
                 "%s: Stored state too old (%.1f hours), starting fresh",
@@ -1264,7 +1189,7 @@ class RoomStateMachine:
         # Calculate remaining time on window timer
         window_timer_remaining = None
         if self._window_timer and self._window_timer_started:
-            elapsed = (datetime.now() - self._window_timer_started).total_seconds()
+            elapsed = (dt_util.now() - self._window_timer_started).total_seconds()
             window_timer_remaining = max(0, self.window_delay - elapsed)
 
         self._storage.set_room_state(

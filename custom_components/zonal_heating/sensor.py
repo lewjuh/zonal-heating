@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from typing import Any
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.util import dt as dt_util
 
 from .const import CONF_ROOMS, CONF_ZONES, DOMAIN
 
@@ -64,6 +67,8 @@ class ZoneDiagnosticSensor(SensorEntity):
     """Diagnostic sensor for a heating zone."""
 
     _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_icon = "mdi:thermostat"
 
     def __init__(
@@ -82,12 +87,21 @@ class ZoneDiagnosticSensor(SensorEntity):
 
         self._unsub_update = None
 
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device information."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self._entry_id}_{self._zone_name}")},
+            name=f"Zonal Heating {self._zone_name}",
+            manufacturer="Zonal Heating",
+            model="Virtual Zone Controller",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
     async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
         await super().async_added_to_hass()
 
-        # Update periodically
-        from datetime import timedelta
         self._unsub_update = async_track_time_interval(
             self.hass,
             self._async_scheduled_update,
@@ -152,7 +166,7 @@ class ZoneDiagnosticSensor(SensorEntity):
         cycle_time_blocking = False
 
         if coordinator._last_zone_change:
-            elapsed = (datetime.now() - coordinator._last_zone_change).total_seconds() / 60
+            elapsed = (dt_util.now() - coordinator._last_zone_change).total_seconds() / 60
             time_since_change = round(elapsed, 1)
 
             if elapsed < coordinator.min_cycle_time:
@@ -242,6 +256,8 @@ class RoomDiagnosticSensor(SensorEntity):
     """Diagnostic sensor for a room."""
 
     _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_icon = "mdi:thermometer"
 
     def __init__(
@@ -262,11 +278,21 @@ class RoomDiagnosticSensor(SensorEntity):
 
         self._unsub_update = None
 
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device information."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self._entry_id}_{self._zone_name}")},
+            name=f"Zonal Heating {self._zone_name}",
+            manufacturer="Zonal Heating",
+            model="Virtual Zone Controller",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
     async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
         await super().async_added_to_hass()
 
-        from datetime import timedelta
         self._unsub_update = async_track_time_interval(
             self.hass,
             self._async_scheduled_update,

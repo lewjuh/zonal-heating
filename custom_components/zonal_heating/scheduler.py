@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
+from homeassistant.util import dt as dt_util
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -204,7 +205,7 @@ class RoomScheduler:
         if not self._schedule_enabled:
             return None
 
-        now = datetime.now()
+        now = dt_util.now()
         is_weekend = now.weekday() >= 5
         schedule = self._weekend_schedule if is_weekend else self._weekday_schedule
 
@@ -219,7 +220,7 @@ class RoomScheduler:
         if not self._schedule_enabled:
             return None
 
-        now = datetime.now()
+        now = dt_util.now()
         current_time = now.strftime("%H:%M")
         is_weekend = now.weekday() >= 5
         schedule = self._weekend_schedule if is_weekend else self._weekday_schedule

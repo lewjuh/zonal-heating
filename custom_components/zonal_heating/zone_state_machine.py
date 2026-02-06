@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 import logging
 from typing import TYPE_CHECKING
 
@@ -16,6 +15,7 @@ from homeassistant.components.climate import (
 from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE, STATE_HOME
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.util import dt as dt_util
 
 from .room_state_machine import RoomStateMachine
 from .storage import ZonalHeatingStorage, parse_datetime
@@ -57,21 +57,24 @@ class ZoneStateMachine:
 
         # State tracking
         self._zone_is_on = False
-        self._last_zone_change: datetime | None = None
+        self._last_zone_change = None
         self._zone_current_temp: float | None = None
         self._away_mode = False
         self._away_mode_pending = False
         self._people_home_count = 0
 
+        # Pre-away target temperatures for restore on return
+        self._pre_away_targets: dict[str, float] = {}
+
         # Startup tracking - ignore min_cycle_time during grace period
-        self._startup_time: datetime | None = None
+        self._startup_time = None
 
         # Retry timer for min_cycle_time blocking
         self._retry_timer: asyncio.TimerHandle | None = None
 
         # Away mode delay timer
         self._away_mode_timer: asyncio.TimerHandle | None = None
-        self._away_mode_timer_started: datetime | None = None
+        self._away_mode_timer_started = None
 
         # Track if we're currently updating zone (to detect external changes)
         self._updating_zone = False
@@ -88,7 +91,7 @@ class ZoneStateMachine:
         _LOGGER.info("Starting zone state machine for %s", self.zone_name)
 
         # Record startup time for grace period
-        self._startup_time = datetime.now()
+        self._startup_time = dt_util.now()
 
         # Restore previous state if available
         state_restored = await self._async_restore_state()
@@ -205,7 +208,6 @@ class ZoneStateMachine:
     @callback
     def _async_person_changed(self, event: Event) -> None:
         """Handle person state changes."""
-        entity_id = event.data.get("entity_id")
         new_state = event.data.get("new_state")
 
         if new_state:
@@ -213,31 +215,28 @@ class ZoneStateMachine:
             self._update_person_states()
 
             if old_away_mode != self._away_mode:
-                # Away mode state changed
                 if self._away_mode:
-                    # Everyone left - start delay timer
                     self._start_away_mode_delay_timer()
                 else:
-                    # Someone came home - cancel delay timer if pending
                     if self._away_mode_timer:
                         self._away_mode_timer.cancel()
                         self._away_mode_timer = None
                         self._away_mode_pending = False
                         _LOGGER.info(
-                            "%s: 🏠 Away mode cancelled - someone returned home (People home: %d/%d)",
+                            "%s: Away mode cancelled - someone returned home (People home: %d/%d)",
                             self.zone_name,
                             self._people_home_count,
                             len(self.person_entities),
                         )
                     else:
                         _LOGGER.info(
-                            "%s: 🏠 Away mode ended - people returned home (People home: %d/%d)",
+                            "%s: Away mode ended - people returned home (People home: %d/%d)",
                             self.zone_name,
                             self._people_home_count,
                             len(self.person_entities),
                         )
-                    # Trigger zone evaluation to resume normal operation
-                    self.hass.async_create_task(self._async_evaluate_zone())
+                    # Restore pre-away temperatures and evaluate
+                    self.hass.async_create_task(self._async_restore_from_away_mode())
 
     def _schedule_periodic_check(self) -> None:
         """Schedule the next periodic safety check."""
@@ -276,17 +275,15 @@ class ZoneStateMachine:
         self._zone_current_temp = state.attributes.get("current_temperature")
         self._zone_is_on = state.state == HVACMode.HEAT
 
-        # Bug fix: Detect external changes (manual override) and trigger evaluation
+        # Detect external changes (manual override) and trigger evaluation
         if old_zone_is_on != self._zone_is_on and not self._updating_zone:
             _LOGGER.info(
-                "%s: External zone state change detected (%s → %s), triggering evaluation",
+                "%s: External zone state change detected (%s -> %s), triggering evaluation",
                 self.zone_name,
                 "ON" if old_zone_is_on else "OFF",
                 "ON" if self._zone_is_on else "OFF",
             )
-            # Update last_zone_change to prevent immediate re-toggle
-            self._last_zone_change = datetime.now()
-            # Trigger evaluation to sync state
+            self._last_zone_change = dt_util.now()
             self.hass.async_create_task(self._async_evaluate_zone())
 
     def _update_person_states(self) -> None:
@@ -296,7 +293,6 @@ class ZoneStateMachine:
             self._people_home_count = 0
             return
 
-        # Count people who are home
         people_home = sum(
             1
             for person_entity in self.person_entities
@@ -322,14 +318,13 @@ class ZoneStateMachine:
             self._away_mode_timer.cancel()
 
         self._away_mode_pending = True
-        self._away_mode_timer_started = datetime.now()
+        self._away_mode_timer_started = dt_util.now()
 
-        # Use provided delay or calculate from config
         if delay_seconds is None:
             delay_seconds = self.away_mode_delay * 60
 
         _LOGGER.info(
-            "%s: 🏠 Everyone left - will activate away mode in %.1f minutes",
+            "%s: Everyone left - will activate away mode in %.1f minutes",
             self.zone_name,
             delay_seconds / 60,
         )
@@ -344,26 +339,23 @@ class ZoneStateMachine:
         self._away_mode_timer = None
         self._away_mode_pending = False
 
-        # Confirm people are still away
         if not self._away_mode:
             _LOGGER.info(
-                "%s: 🏠 Away mode delay expired but people are home, ignoring",
+                "%s: Away mode delay expired but people are home, ignoring",
                 self.zone_name,
             )
             return
 
         _LOGGER.info(
-            "%s: 🏠 Away mode delay expired - activating away mode after %d minute delay",
+            "%s: Away mode delay expired - activating away mode after %d minute delay",
             self.zone_name,
             self.away_mode_delay,
         )
 
-        # Trigger zone evaluation which will activate away mode
         await self._async_evaluate_zone()
 
     async def _async_evaluate_zone(self) -> None:
         """Evaluate zone state based on room states."""
-        # Cancel any pending retry timer since we're evaluating now
         if self._retry_timer:
             self._retry_timer.cancel()
             self._retry_timer = None
@@ -375,12 +367,10 @@ class ZoneStateMachine:
         # Check if away mode is pending (timer running)
         if self._away_mode_pending:
             _LOGGER.info(
-                "%s: 🏠 Away mode pending - waiting %d min delay (timer active)",
+                "%s: Away mode pending - waiting %d min delay (timer active)",
                 self.zone_name,
                 self.away_mode_delay,
             )
-            # Don't enter away mode yet, let timer expire first
-            # But still turn off zone to save energy
             if self._zone_is_on:
                 zone_state = self.hass.states.get(self.zone_climate)
                 if zone_state and zone_state.state == HVACMode.HEAT:
@@ -403,20 +393,23 @@ class ZoneStateMachine:
         # Check if away mode is confirmed active (after delay)
         if self._away_mode and self.person_entities and not self._away_mode_timer:
             _LOGGER.info(
-                "%s: 🏠 AWAY MODE ACTIVE - All people away, entering low power mode",
+                "%s: AWAY MODE ACTIVE - All people away, entering low power mode",
                 self.zone_name,
             )
             await self._async_handle_away_mode()
             return
 
-        # Find rooms that need heat
-        rooms_needing_heat = [
-            room
-            for room in self.rooms
-            if room.needs_heat and room.temperature_deficit > 0
-        ]
+        # Find rooms that need heat, sorted by priority (highest first)
+        rooms_needing_heat = sorted(
+            [
+                room
+                for room in self.rooms
+                if room.needs_heat and room.temperature_deficit > 0
+            ],
+            key=lambda r: r.temperature_deficit,
+            reverse=True,
+        )
 
-        # Log all room states
         _LOGGER.info(
             "%s: Room status - %d/%d rooms need heat",
             self.zone_name,
@@ -427,19 +420,18 @@ class ZoneStateMachine:
         for room in self.rooms:
             if room.needs_heat and room.temperature_deficit > 0:
                 _LOGGER.info(
-                    "%s:   ✓ %s NEEDS HEAT (deficit: %.1f°C)",
+                    "%s:   > %s NEEDS HEAT (deficit: %.1f C)",
                     self.zone_name,
                     room.room_name,
                     room.temperature_deficit,
                 )
             else:
                 _LOGGER.debug(
-                    "%s:   ✗ %s does not need heat",
+                    "%s:   x %s does not need heat",
                     self.zone_name,
                     room.room_name,
                 )
 
-        # Determine desired zone state
         desired_zone_on = len(rooms_needing_heat) > 0
 
         _LOGGER.info(
@@ -449,32 +441,40 @@ class ZoneStateMachine:
             "ON" if desired_zone_on else "OFF",
         )
 
-        # Check if we should respect min cycle time
         if self._should_respect_min_cycle_time(desired_zone_on):
             return
 
-        # Update zone climate
         await self._async_update_zone_climate(desired_zone_on, rooms_needing_heat)
 
     async def _async_handle_away_mode(self) -> None:
-        """Handle away mode - set all TRVs to away temperature and turn off zone."""
-        _LOGGER.info("🏠" * 30)
+        """Handle away mode - save targets, set all TRVs to away temperature, turn off zone."""
         _LOGGER.info(
-            "%s: 🏠 AWAY MODE - Setting all TRVs to %.1f°C and turning zone OFF",
+            "%s: AWAY MODE - Setting all TRVs to %.1f C and turning zone OFF",
             self.zone_name,
             self.away_temperature,
         )
 
+        # Save current TRV target temperatures before overwriting
+        self._pre_away_targets.clear()
+        for room in self.rooms:
+            if room.target_temperature is not None:
+                self._pre_away_targets[room.room_name] = room.target_temperature
+                _LOGGER.debug(
+                    "%s: Saved pre-away target for %s: %.1f C",
+                    self.zone_name,
+                    room.room_name,
+                    room.target_temperature,
+                )
+
         # Set all room TRVs to away temperature
         for room in self.rooms:
             _LOGGER.info(
-                "%s:   → Setting %s to away temperature (%.1f°C)",
+                "%s:   -> Setting %s to away temperature (%.1f C)",
                 self.zone_name,
                 room.room_name,
                 self.away_temperature,
             )
 
-            # Set temperature on the TRV
             await self.hass.services.async_call(
                 CLIMATE_DOMAIN,
                 SERVICE_SET_TEMPERATURE,
@@ -489,7 +489,7 @@ class ZoneStateMachine:
         zone_state = self.hass.states.get(self.zone_climate)
         if zone_state and zone_state.state == HVACMode.HEAT:
             _LOGGER.info(
-                "%s: ❄️  Turning zone thermostat OFF for away mode",
+                "%s: Turning zone thermostat OFF for away mode",
                 self.zone_name,
             )
             await self.hass.services.async_call(
@@ -504,25 +504,53 @@ class ZoneStateMachine:
             self._zone_is_on = False
 
         _LOGGER.info(
-            "%s: ✅ Away mode complete - all TRVs at %.1f°C, zone OFF",
+            "%s: Away mode complete - all TRVs at %.1f C, zone OFF",
             self.zone_name,
             self.away_temperature,
         )
-        _LOGGER.info("🏠" * 30)
+
+    async def _async_restore_from_away_mode(self) -> None:
+        """Restore TRV target temperatures after people return home."""
+        if self._pre_away_targets:
+            _LOGGER.info(
+                "%s: Restoring pre-away temperatures for %d room(s)",
+                self.zone_name,
+                len(self._pre_away_targets),
+            )
+            for room in self.rooms:
+                saved_target = self._pre_away_targets.get(room.room_name)
+                if saved_target is not None:
+                    _LOGGER.info(
+                        "%s:   -> Restoring %s to %.1f C",
+                        self.zone_name,
+                        room.room_name,
+                        saved_target,
+                    )
+                    await self.hass.services.async_call(
+                        CLIMATE_DOMAIN,
+                        SERVICE_SET_TEMPERATURE,
+                        {
+                            ATTR_ENTITY_ID: room.climate_entity,
+                            ATTR_TEMPERATURE: saved_target,
+                        },
+                        blocking=False,
+                    )
+            self._pre_away_targets.clear()
+
+        await self._async_evaluate_zone()
 
     def _is_in_startup_grace_period(self) -> bool:
         """Check if we're still in the startup grace period."""
         if self._startup_time is None:
             return False
 
-        time_since_startup = (datetime.now() - self._startup_time).total_seconds()
+        time_since_startup = (dt_util.now() - self._startup_time).total_seconds()
         return time_since_startup < STARTUP_GRACE_PERIOD
 
     def _should_respect_min_cycle_time(self, desired_on: bool) -> bool:
         """Check if we should respect minimum cycle time."""
-        # If in startup grace period, don't enforce min_cycle_time
         if self._is_in_startup_grace_period():
-            time_since_startup = (datetime.now() - self._startup_time).total_seconds()
+            time_since_startup = (dt_util.now() - self._startup_time).total_seconds()
             _LOGGER.debug(
                 "%s: In startup grace period (%.0fs elapsed of %ds), bypassing min_cycle_time",
                 self.zone_name,
@@ -531,12 +559,10 @@ class ZoneStateMachine:
             )
             return False
 
-        # If no previous change, allow this one
         if self._last_zone_change is None:
             _LOGGER.debug("%s: No previous change, allowing action", self.zone_name)
             return False
 
-        # If desired state matches current, no change needed
         if desired_on == self._zone_is_on:
             _LOGGER.debug(
                 "%s: Zone already in desired state (%s), no change needed",
@@ -545,9 +571,8 @@ class ZoneStateMachine:
             )
             return False
 
-        # Check if enough time has elapsed
         time_since_change = (
-            datetime.now() - self._last_zone_change
+            dt_util.now() - self._last_zone_change
         ).total_seconds() / 60
 
         if time_since_change < self.min_cycle_time:
@@ -558,13 +583,12 @@ class ZoneStateMachine:
                 "%s: MIN CYCLE TIME BLOCKING CHANGE! "
                 "Would turn zone %s but only %.1f min elapsed (min: %d min, %.1f min remaining)",
                 self.zone_name,
-                "OFF→ON" if desired_on else "ON→OFF",
+                "OFF->ON" if desired_on else "ON->OFF",
                 time_since_change,
                 self.min_cycle_time,
                 time_remaining,
             )
 
-            # Schedule automatic retry after min_cycle_time expires
             _LOGGER.info(
                 "%s: Scheduling automatic retry in %.1f minutes",
                 self.zone_name,
@@ -588,7 +612,6 @@ class ZoneStateMachine:
         self, turn_on: bool, rooms_needing_heat: list[RoomStateMachine]
     ) -> None:
         """Update zone climate based on desired state."""
-        # Check if zone climate entity exists
         zone_state = self.hass.states.get(self.zone_climate)
         if not zone_state:
             _LOGGER.warning(
@@ -596,11 +619,9 @@ class ZoneStateMachine:
             )
             return
 
-        # Get current zone temperature
         zone_temp = zone_state.attributes.get("current_temperature")
         zone_hvac = zone_state.state
 
-        # Determine if we need to make changes
         needs_change = (turn_on and zone_hvac != HVACMode.HEAT) or (
             not turn_on and zone_hvac == HVACMode.HEAT
         )
@@ -613,10 +634,8 @@ class ZoneStateMachine:
             )
             return
 
-        # Log the change
-        _LOGGER.info("🔥" * 30)
         _LOGGER.info(
-            "%s: 🔄 CHANGING ZONE CLIMATE %s → %s",
+            "%s: CHANGING ZONE CLIMATE %s -> %s",
             self.zone_name,
             "ON" if zone_hvac == HVACMode.HEAT else "OFF",
             "ON" if turn_on else "OFF",
@@ -628,7 +647,7 @@ class ZoneStateMachine:
         if rooms_needing_heat:
             for room in rooms_needing_heat:
                 _LOGGER.info(
-                    "%s:   → %s (deficit: %.1f°C)",
+                    "%s:   -> %s (deficit: %.1f C)",
                     self.zone_name,
                     room.room_name,
                     room.temperature_deficit,
@@ -636,22 +655,20 @@ class ZoneStateMachine:
         else:
             _LOGGER.info("%s:   No rooms need heat", self.zone_name)
 
-        # Mark that we're updating to prevent external change detection
         self._updating_zone = True
 
         try:
             if turn_on:
-                # Turn zone ON - set temperature above current to trigger boiler
                 target_temp = (zone_temp + 5) if zone_temp is not None else 25
                 _LOGGER.info(
-                    "%s: 🌡️  Setting zone temperature: %.1f°C → %.1f°C (current + 5°C)",
+                    "%s: Setting zone temperature: %.1f C -> %.1f C (current + 5 C)",
                     self.zone_name,
                     zone_temp or 0,
                     target_temp,
                 )
 
                 await self.hass.services.async_call(
-                    "climate",
+                    CLIMATE_DOMAIN,
                     SERVICE_SET_TEMPERATURE,
                     {
                         ATTR_ENTITY_ID: self.zone_climate,
@@ -661,17 +678,16 @@ class ZoneStateMachine:
                 )
             else:
                 _LOGGER.info(
-                    "%s: ❄️  Turning OFF - no temperature change needed", self.zone_name
+                    "%s: Turning OFF - no temperature change needed", self.zone_name
                 )
 
-            # Set HVAC mode
             _LOGGER.info(
                 "%s: Setting HVAC mode to %s",
                 self.zone_name,
                 HVACMode.HEAT if turn_on else HVACMode.OFF,
             )
             await self.hass.services.async_call(
-                "climate",
+                CLIMATE_DOMAIN,
                 SERVICE_SET_HVAC_MODE,
                 {
                     ATTR_ENTITY_ID: self.zone_climate,
@@ -680,18 +696,16 @@ class ZoneStateMachine:
                 blocking=True,
             )
 
-            # Update tracking
             self._zone_is_on = turn_on
-            self._last_zone_change = datetime.now()
+            self._last_zone_change = dt_util.now()
         finally:
             self._updating_zone = False
 
         _LOGGER.info(
-            "%s: ✅ Zone change complete - now %s (min_cycle_time reset)",
+            "%s: Zone change complete - now %s (min_cycle_time reset)",
             self.zone_name,
             "ON" if turn_on else "OFF",
         )
-        _LOGGER.info("🔥" * 30)
 
     async def _async_restore_state(self) -> bool:
         """Restore state from persistent storage. Returns True if state was restored."""
@@ -702,12 +716,11 @@ class ZoneStateMachine:
         if stored is None:
             return False
 
-        # Check if stored state is recent (within 24 hours)
         saved_at = parse_datetime(stored.get("saved_at"))
         if saved_at is None:
             return False
 
-        age_hours = (datetime.now() - saved_at).total_seconds() / 3600
+        age_hours = (dt_util.now() - saved_at).total_seconds() / 3600
         if age_hours > 24:
             _LOGGER.info(
                 "%s: Stored state too old (%.1f hours), starting fresh",
@@ -717,7 +730,6 @@ class ZoneStateMachine:
             self._storage.clear_zone_state(self.zone_name)
             return False
 
-        # Restore zone state
         self._zone_is_on = stored.get("zone_is_on", False)
         self._last_zone_change = parse_datetime(stored.get("last_zone_change"))
 
@@ -728,7 +740,6 @@ class ZoneStateMachine:
             self._last_zone_change,
         )
 
-        # Restore away mode timer if it was pending
         if stored.get("away_mode_pending") and stored.get("away_mode_timer_remaining"):
             remaining = stored["away_mode_timer_remaining"]
             if remaining > 0:
@@ -739,7 +750,6 @@ class ZoneStateMachine:
                 )
                 self._start_away_mode_delay_timer(delay_seconds=remaining)
 
-        # If we restored last_zone_change, don't use startup grace period
         return self._last_zone_change is not None
 
     async def _async_save_state(self) -> None:
@@ -747,10 +757,9 @@ class ZoneStateMachine:
         if self._storage is None:
             return
 
-        # Calculate remaining time on away mode timer
         away_timer_remaining = None
         if self._away_mode_pending and self._away_mode_timer_started:
-            elapsed = (datetime.now() - self._away_mode_timer_started).total_seconds()
+            elapsed = (dt_util.now() - self._away_mode_timer_started).total_seconds()
             total_delay = self.away_mode_delay * 60
             away_timer_remaining = max(0, total_delay - elapsed)
 

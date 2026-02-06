@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -20,6 +21,7 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -58,7 +60,6 @@ async def async_setup_entry(
     zones = entry.data.get(CONF_ZONES, [])
     settings = entry.data.get(CONF_SETTINGS, {})
 
-    # Create climate entities for each room
     entities = []
     for zone_idx, zone in enumerate(zones):
         zone_name = zone.get("name", f"Zone {zone_idx}")
@@ -107,7 +108,8 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
     _attr_should_poll = False
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
-    _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT, HVACMode.AUTO]
+    _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
+    _attr_has_entity_name = True
 
     def __init__(
         self,
@@ -149,6 +151,21 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         self._attr_name = f"Zonal Heating {room_name}"
         self._attr_extra_state_attributes = {}
 
+        # Listener cleanup and timer handles
+        self._remove_listeners: list = []
+        self._startup_sync_timer: asyncio.TimerHandle | None = None
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device info to group entities under a zone device."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self._entry_id}_{self._zone_name}")},
+            name=f"Zonal Heating {self._zone_name}",
+            manufacturer="Zonal Heating",
+            model="Virtual Zone Controller",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
     async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
         await super().async_added_to_hass()
@@ -165,26 +182,34 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             )
             self._priority = last_state.attributes.get(ATTR_PRIORITY, self._priority)
 
-        # Track TRV state changes
-        async_track_state_change_event(
-            self.hass, [self._trv_entity], self._async_trv_changed
+        # Track TRV state changes (store unsub for cleanup)
+        self._remove_listeners.append(
+            async_track_state_change_event(
+                self.hass, [self._trv_entity], self._async_trv_changed
+            )
         )
 
         # Track external temperature sensor state changes
         if self._temp_sensor:
-            async_track_state_change_event(
-                self.hass, [self._temp_sensor], self._async_temp_sensor_changed
+            self._remove_listeners.append(
+                async_track_state_change_event(
+                    self.hass, [self._temp_sensor], self._async_temp_sensor_changed
+                )
             )
 
         # Track window sensor state changes
         if self._window_sensors:
-            async_track_state_change_event(
-                self.hass, self._window_sensors, self._async_window_changed
+            self._remove_listeners.append(
+                async_track_state_change_event(
+                    self.hass, self._window_sensors, self._async_window_changed
+                )
             )
 
         # Track zone thermostat state changes
-        async_track_state_change_event(
-            self.hass, [self._zone_thermostat], self._async_zone_thermostat_changed
+        self._remove_listeners.append(
+            async_track_state_change_event(
+                self.hass, [self._zone_thermostat], self._async_zone_thermostat_changed
+            )
         )
 
         # Initial update
@@ -192,14 +217,21 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         self._async_update_window_state()
         self._async_update_zone_active()
 
-        # Note: Initial window state is handled by room state machine with proper delay
-
-        # Schedule TRV target sync after brief delay to ensure TRV is available
-        # This ensures the TRV matches our restored target temperature
-        self.hass.loop.call_later(
+        # Schedule TRV target sync after brief delay (store handle for cancellation)
+        self._startup_sync_timer = self.hass.loop.call_later(
             3.0,
             lambda: self.hass.async_create_task(self._async_startup_sync_trv()),
         )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clean up listeners and timers when entity is removed."""
+        for unsub in self._remove_listeners:
+            unsub()
+        self._remove_listeners.clear()
+
+        if self._startup_sync_timer:
+            self._startup_sync_timer.cancel()
+            self._startup_sync_timer = None
 
     @callback
     def _async_trv_changed(self, event) -> None:
@@ -218,8 +250,6 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         self._async_update_window_state()
         new_window_state = self._window_open
 
-        # Note: TRV control is handled by room state machine with proper delay
-        # We just update the display state here
         if old_window_state != new_window_state:
             _LOGGER.debug(
                 "%s: Window state changed: %s",
@@ -241,50 +271,40 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         if not trv_state or not trv_state.attributes:
             return
 
-        # Get current temperature - prefer external sensor if configured
         if self._temp_sensor:
             temp_state = self.hass.states.get(self._temp_sensor)
             if temp_state and temp_state.state not in ("unavailable", "unknown"):
                 try:
                     self._attr_current_temperature = float(temp_state.state)
                 except (ValueError, TypeError):
-                    # Fall back to TRV if external sensor has invalid value
                     self._attr_current_temperature = trv_state.attributes.get(
                         "current_temperature"
                     )
             else:
-                # Fall back to TRV if external sensor unavailable
                 self._attr_current_temperature = trv_state.attributes.get(
                     "current_temperature"
                 )
         else:
-            # No external sensor, use TRV
             self._attr_current_temperature = trv_state.attributes.get(
                 "current_temperature"
             )
 
-        # Determine if TRV is requesting heat
-        # Use the same temperature source for consistency
         current_temp = self._attr_current_temperature
         trv_target = trv_state.attributes.get("temperature")
         trv_hvac_mode = trv_state.state
 
         old_heat_requesting = self._heat_requesting
 
-        if (
+        self._heat_requesting = (
             trv_hvac_mode == HVACMode.HEAT
             and current_temp is not None
             and trv_target is not None
             and current_temp < trv_target
-        ):
-            self._heat_requesting = True
-        else:
-            self._heat_requesting = False
+        )
 
-        # Log heat requesting changes
         if old_heat_requesting != self._heat_requesting:
             _LOGGER.debug(
-                "%s: Heat requesting changed: %s (TRV: %s, Current: %.1f°C, Target: %.1f°C%s)",
+                "%s: Heat requesting changed: %s (TRV: %s, Current: %.1f C, Target: %.1f C%s)",
                 self._attr_name,
                 "YES" if self._heat_requesting else "NO",
                 trv_hvac_mode,
@@ -311,15 +331,12 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             self._zone_active = zone_state.state == HVACMode.HEAT
 
     async def _async_startup_sync_trv(self) -> None:
-        """Sync our target temperature to the TRV on startup.
+        """Sync our target temperature to the TRV on startup."""
+        self._startup_sync_timer = None
 
-        This ensures the TRV matches the virtual entity's restored target,
-        preventing mismatches from previous frost protection or external changes.
-        """
         if self._attr_target_temperature is None:
             return
 
-        # Get current TRV state
         trv_state = self.hass.states.get(self._trv_entity)
         if not trv_state:
             _LOGGER.debug(
@@ -331,7 +348,6 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         trv_target = trv_state.attributes.get("temperature")
         trv_mode = trv_state.state
 
-        # Check if sync is needed
         needs_temp_sync = (
             trv_target is None
             or abs(trv_target - self._attr_target_temperature) > 0.1
@@ -340,7 +356,7 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
 
         if not needs_temp_sync and not needs_mode_sync:
             _LOGGER.debug(
-                "%s: Startup sync not needed - TRV already at %.1f°C in %s mode",
+                "%s: Startup sync not needed - TRV already at %.1f C in %s mode",
                 self._attr_name,
                 trv_target,
                 trv_mode,
@@ -348,14 +364,13 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             return
 
         _LOGGER.info(
-            "%s: Startup sync - TRV target %.1f°C -> %.1f°C, mode %s -> heat",
+            "%s: Startup sync - TRV target %.1f C -> %.1f C, mode %s -> heat",
             self._attr_name,
             trv_target or 0,
             self._attr_target_temperature,
             trv_mode,
         )
 
-        # Try to use room state machine's MQTT-first approach if available
         room_sm = self._get_room_state_machine()
         if room_sm and room_sm._mqtt_control_available:
             await room_sm._async_set_trv_target_temp(self._attr_target_temperature)
@@ -364,7 +379,6 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
                 self._attr_name,
             )
         else:
-            # Fallback to HA service
             await self.hass.services.async_call(
                 CLIMATE_DOMAIN,
                 "set_temperature",
@@ -375,7 +389,6 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
                 blocking=True,
             )
 
-        # Ensure TRV is in heat mode (not off)
         if needs_mode_sync:
             await self.hass.services.async_call(
                 CLIMATE_DOMAIN,
@@ -432,22 +445,17 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         if self._zone_active and self._heat_requesting:
             return HVACAction.HEATING
 
-        if self._heat_requesting:
-            return HVACAction.IDLE  # Requesting but zone not active
-
         return HVACAction.IDLE
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
-        # Get zone state machine for away mode info
         zone_coordinator = None
         room_state_machine = None
         if DOMAIN in self.hass.data and self._entry_id in self.hass.data[DOMAIN]:
             coordinators = self.hass.data[DOMAIN][self._entry_id].get("coordinators", {})
             zone_coordinator = coordinators.get(self._zone_name)
 
-            # Find our room state machine
             if zone_coordinator:
                 for room in zone_coordinator.rooms:
                     if room.climate_entity == self._trv_entity:
@@ -465,7 +473,6 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             "using_external_sensor": self._temp_sensor is not None,
         }
 
-        # Add room state machine data for debugging
         if room_state_machine:
             attrs["sm_needs_heat"] = room_state_machine.needs_heat
             attrs["sm_temperature_deficit"] = round(room_state_machine.temperature_deficit, 2)
@@ -473,7 +480,6 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             attrs["sm_overheated"] = room_state_machine._overheated
             attrs["sm_is_on"] = room_state_machine._is_on
 
-            # Add threshold calculations
             if room_state_machine._target_temp is not None:
                 attrs["heat_threshold"] = round(
                     room_state_machine._target_temp - room_state_machine.temp_differential, 1
@@ -482,19 +488,16 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
                     room_state_machine._target_temp + room_state_machine.overheat_threshold, 1
                 )
 
-        # Add away mode info if zone coordinator available
         if zone_coordinator:
             attrs[ATTR_AWAY_MODE] = zone_coordinator.away_mode
             if zone_coordinator.person_entities:
                 attrs[ATTR_PEOPLE_HOME] = zone_coordinator.people_home_count
 
-            # Add zone-level debug info
             attrs["zone_cycle_blocking"] = (
                 zone_coordinator._last_zone_change is not None
                 and zone_coordinator._retry_timer is not None
             )
 
-        # Add scheduler info if available
         scheduler = self._get_room_scheduler()
         if scheduler:
             attrs["schedule_enabled"] = scheduler.schedule_enabled
@@ -506,25 +509,18 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
                 attrs["next_schedule_time"] = next_point[0]
                 attrs["next_schedule_temp"] = next_point[1]
 
-        # Determine why active/inactive with detailed reason
-        reason = self._build_reason(zone_coordinator, room_state_machine)
-        if "active" in reason.lower() or "heating" in reason.lower():
-            attrs["status_reason"] = reason
-        else:
-            attrs["status_reason"] = reason
+        attrs["status_reason"] = self._build_reason(zone_coordinator, room_state_machine)
 
         return attrs
 
     def _build_reason(self, zone_coordinator, room_sm) -> str:
         """Build detailed reason for current state."""
-        # Check away mode
         if zone_coordinator and zone_coordinator.away_mode and not zone_coordinator._away_mode_timer:
             return "Away mode active - low power"
 
         if zone_coordinator and zone_coordinator._away_mode_pending:
             return f"Away mode pending ({zone_coordinator.away_mode_delay}min delay)"
 
-        # Check room state machine conditions
         if room_sm:
             if room_sm._overheated:
                 if room_sm._target_temp is not None:
@@ -537,21 +533,16 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             if room_sm._window_open and room_sm._window_timer:
                 return f"Window detected - waiting {room_sm.window_delay}s to confirm"
 
-        # Check HVAC mode
         if self._attr_hvac_mode == HVACMode.OFF:
             return "Climate entity turned off"
 
-        # Check temperature
         if room_sm and room_sm.needs_heat:
             if self._zone_active:
                 return f"Heating - deficit {room_sm.temperature_deficit:.1f}C"
-            else:
-                # Zone not active but room needs heat
-                if zone_coordinator and zone_coordinator._retry_timer:
-                    return "Needs heat but zone blocked by min_cycle_time"
-                return "Needs heat - waiting for zone to activate"
+            if zone_coordinator and zone_coordinator._retry_timer:
+                return "Needs heat but zone blocked by min_cycle_time"
+            return "Needs heat - waiting for zone to activate"
 
-        # Temperature satisfied
         if (
             self._attr_current_temperature is not None
             and self._attr_target_temperature is not None
@@ -572,19 +563,17 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         self._attr_target_temperature = temperature
         self.async_write_ha_state()
         _LOGGER.debug(
-            "%s: Set target temperature to %.1f°C",
+            "%s: Set target temperature to %.1f C",
             self._attr_name,
             temperature,
         )
 
-        # Notify scheduler of manual override
         scheduler = self._get_room_scheduler()
         if scheduler:
             scheduler.handle_manual_override(temperature)
 
-        # Forward temperature to the actual TRV
         _LOGGER.debug(
-            "%s: Forwarding temperature %.1f°C to TRV %s",
+            "%s: Forwarding temperature %.1f C to TRV %s",
             self._attr_name,
             temperature,
             self._trv_entity,
@@ -609,7 +598,6 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         self.async_write_ha_state()
         _LOGGER.debug("%s: Set HVAC mode to %s", self._attr_name, hvac_mode)
 
-        # Forward HVAC mode to the actual TRV
         _LOGGER.debug(
             "%s: Forwarding HVAC mode %s to TRV %s",
             self._attr_name,

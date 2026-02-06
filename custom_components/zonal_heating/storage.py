@@ -8,6 +8,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 
@@ -76,7 +77,7 @@ class ZonalHeatingStorage:
             "last_zone_change": last_zone_change.isoformat() if last_zone_change else None,
             "away_mode_pending": away_mode_pending,
             "away_mode_timer_remaining": away_mode_timer_remaining,
-            "saved_at": datetime.now().isoformat(),
+            "saved_at": dt_util.now().isoformat(),
         }
 
     def get_room_state(self, room_name: str) -> dict[str, Any] | None:
@@ -102,7 +103,7 @@ class ZonalHeatingStorage:
             "window_timer_remaining": window_timer_remaining,
             "trv_turned_off_for_window": trv_turned_off_for_window,
             "overheated": overheated,
-            "saved_at": datetime.now().isoformat(),
+            "saved_at": dt_util.now().isoformat(),
         }
 
     def clear_room_state(self, room_name: str) -> None:
@@ -192,6 +193,9 @@ def parse_datetime(iso_string: str | None) -> datetime | None:
     if iso_string is None:
         return None
     try:
+        parsed = dt_util.parse_datetime(iso_string)
+        if parsed is not None:
+            return parsed
         return datetime.fromisoformat(iso_string)
     except (ValueError, TypeError):
         return None

@@ -6,6 +6,8 @@ import asyncio
 import logging
 from pathlib import Path
 
+import voluptuous as vol
+
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
@@ -91,8 +93,8 @@ async def _async_wait_for_entity(
     hass: HomeAssistant, entity_id: str, timeout: float = 5
 ) -> bool:
     """Wait briefly for an entity to become available."""
-    start_time = asyncio.get_event_loop().time()
-    while (asyncio.get_event_loop().time() - start_time) < timeout:
+    start_time = hass.loop.time()
+    while (hass.loop.time() - start_time) < timeout:
         state = hass.states.get(entity_id)
         if state:
             return True
@@ -253,8 +255,19 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Unload platforms
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        # Clean up stored data
         hass.data[DOMAIN].pop(entry.entry_id)
+
+        remaining = {k for k in hass.data.get(DOMAIN, {}) if k != "card_registered"}
+        if not remaining:
+            for service_name in (
+                "set_room_schedule",
+                "get_room_schedule",
+                "delete_room_schedule",
+                "add_schedule_point",
+                "remove_schedule_point",
+            ):
+                hass.services.async_remove(DOMAIN, service_name)
+
         _LOGGER.info(
             "Zonal heating integration unloaded successfully for entry %s",
             entry.entry_id,
@@ -286,10 +299,7 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
 
     async def handle_set_room_schedule(call: ServiceCall) -> None:
         """Handle set_room_schedule service call."""
-        room_name = call.data.get("room_name")
-        if not room_name:
-            _LOGGER.error("set_room_schedule: room_name is required")
-            return
+        room_name = call.data["room_name"]
 
         storage = await _find_storage(room_name)
         if not storage:
@@ -313,9 +323,7 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
 
     async def handle_get_room_schedule(call: ServiceCall) -> dict:
         """Handle get_room_schedule service call."""
-        room_name = call.data.get("room_name")
-        if not room_name:
-            return {"error": "room_name is required"}
+        room_name = call.data["room_name"]
 
         storage = await _find_storage(room_name)
         if not storage:
@@ -328,10 +336,7 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
 
     async def handle_delete_room_schedule(call: ServiceCall) -> None:
         """Handle delete_room_schedule service call."""
-        room_name = call.data.get("room_name")
-        if not room_name:
-            _LOGGER.error("delete_room_schedule: room_name is required")
-            return
+        room_name = call.data["room_name"]
 
         storage = await _find_storage(room_name)
         if not storage:
@@ -349,18 +354,10 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
 
     async def handle_add_schedule_point(call: ServiceCall) -> None:
         """Handle add_schedule_point service call."""
-        room_name = call.data.get("room_name")
-        timeline = call.data.get("timeline")
-        time = call.data.get("time")
-        temperature = call.data.get("temperature")
-
-        if not all([room_name, timeline, time, temperature]):
-            _LOGGER.error("add_schedule_point: Missing required fields")
-            return
-
-        if timeline not in ("weekday", "weekend"):
-            _LOGGER.error("add_schedule_point: timeline must be 'weekday' or 'weekend'")
-            return
+        room_name = call.data["room_name"]
+        timeline = call.data["timeline"]
+        time = call.data["time"]
+        temperature = call.data["temperature"]
 
         storage = await _find_storage(room_name)
         if not storage:
@@ -389,13 +386,9 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
 
     async def handle_remove_schedule_point(call: ServiceCall) -> None:
         """Handle remove_schedule_point service call."""
-        room_name = call.data.get("room_name")
-        timeline = call.data.get("timeline")
-        time = call.data.get("time")
-
-        if not all([room_name, timeline, time]):
-            _LOGGER.error("remove_schedule_point: Missing required fields")
-            return
+        room_name = call.data["room_name"]
+        timeline = call.data["timeline"]
+        time = call.data["time"]
 
         storage = await _find_storage(room_name)
         if not storage:
@@ -419,23 +412,50 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
 
         _LOGGER.info("Removed schedule point for room '%s' at %s", room_name, time)
 
+    set_schedule_schema = vol.Schema({
+        vol.Required("room_name"): str,
+        vol.Optional("enabled", default=True): bool,
+        vol.Optional("weekday", default=[]): list,
+        vol.Optional("weekend", default=[]): list,
+    })
+    get_schedule_schema = vol.Schema({
+        vol.Required("room_name"): str,
+    })
+    delete_schedule_schema = vol.Schema({
+        vol.Required("room_name"): str,
+    })
+    add_point_schema = vol.Schema({
+        vol.Required("room_name"): str,
+        vol.Required("timeline"): vol.In(["weekday", "weekend"]),
+        vol.Required("time"): str,
+        vol.Required("temperature"): vol.Coerce(float),
+    })
+    remove_point_schema = vol.Schema({
+        vol.Required("room_name"): str,
+        vol.Required("timeline"): vol.In(["weekday", "weekend"]),
+        vol.Required("time"): str,
+    })
+
     hass.services.async_register(
-        DOMAIN, "set_room_schedule", handle_set_room_schedule
+        DOMAIN, "set_room_schedule", handle_set_room_schedule,
+        schema=set_schedule_schema,
     )
     hass.services.async_register(
-        DOMAIN,
-        "get_room_schedule",
-        handle_get_room_schedule,
+        DOMAIN, "get_room_schedule", handle_get_room_schedule,
+        schema=get_schedule_schema,
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
-        DOMAIN, "delete_room_schedule", handle_delete_room_schedule
+        DOMAIN, "delete_room_schedule", handle_delete_room_schedule,
+        schema=delete_schedule_schema,
     )
     hass.services.async_register(
-        DOMAIN, "add_schedule_point", handle_add_schedule_point
+        DOMAIN, "add_schedule_point", handle_add_schedule_point,
+        schema=add_point_schema,
     )
     hass.services.async_register(
-        DOMAIN, "remove_schedule_point", handle_remove_schedule_point
+        DOMAIN, "remove_schedule_point", handle_remove_schedule_point,
+        schema=remove_point_schema,
     )
 
     _LOGGER.info("Registered zonal_heating schedule services")
