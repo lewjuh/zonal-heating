@@ -325,9 +325,7 @@ class RoomStateMachine:
             )
 
             # Find all number entities on the same device
-            for entry in entity_reg.entities.values():
-                if entry.device_id != device_id:
-                    continue
+            for entry in er.async_entries_for_device(entity_reg, device_id):
                 if entry.domain != NUMBER_DOMAIN:
                     continue
 
@@ -432,9 +430,7 @@ class RoomStateMachine:
         if climate_entry and climate_entry.device_id:
             device_id = climate_entry.device_id
 
-            for entry in entity_reg.entities.values():
-                if entry.device_id != device_id:
-                    continue
+            for entry in er.async_entries_for_device(entity_reg, device_id):
                 if entry.domain != SELECT_DOMAIN:
                     continue
 

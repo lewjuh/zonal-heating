@@ -271,23 +271,15 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         if not trv_state or not trv_state.attributes:
             return
 
+        self._attr_current_temperature = trv_state.attributes.get("current_temperature")
+
         if self._temp_sensor:
             temp_state = self.hass.states.get(self._temp_sensor)
             if temp_state and temp_state.state not in ("unavailable", "unknown"):
                 try:
                     self._attr_current_temperature = float(temp_state.state)
                 except (ValueError, TypeError):
-                    self._attr_current_temperature = trv_state.attributes.get(
-                        "current_temperature"
-                    )
-            else:
-                self._attr_current_temperature = trv_state.attributes.get(
-                    "current_temperature"
-                )
-        else:
-            self._attr_current_temperature = trv_state.attributes.get(
-                "current_temperature"
-            )
+                    pass
 
         current_temp = self._attr_current_temperature
         trv_target = trv_state.attributes.get("temperature")
@@ -404,16 +396,16 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
                 self._attr_name,
             )
 
+    def _get_zone_coordinator(self):
+        """Get the zone coordinator for this climate entity."""
+        entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry_id)
+        if not entry_data:
+            return None
+        return entry_data.get("coordinators", {}).get(self._zone_name)
+
     def _get_room_state_machine(self):
         """Get the room state machine for this climate entity."""
-        if DOMAIN not in self.hass.data:
-            return None
-        if self._entry_id not in self.hass.data[DOMAIN]:
-            return None
-
-        coordinators = self.hass.data[DOMAIN][self._entry_id].get("coordinators", {})
-        zone_coordinator = coordinators.get(self._zone_name)
-
+        zone_coordinator = self._get_zone_coordinator()
         if not zone_coordinator:
             return None
 
@@ -450,17 +442,8 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
-        zone_coordinator = None
-        room_state_machine = None
-        if DOMAIN in self.hass.data and self._entry_id in self.hass.data[DOMAIN]:
-            coordinators = self.hass.data[DOMAIN][self._entry_id].get("coordinators", {})
-            zone_coordinator = coordinators.get(self._zone_name)
-
-            if zone_coordinator:
-                for room in zone_coordinator.rooms:
-                    if room.climate_entity == self._trv_entity:
-                        room_state_machine = room
-                        break
+        zone_coordinator = self._get_zone_coordinator()
+        room_state_machine = self._get_room_state_machine()
 
         attrs = {
             ATTR_ZONE_ACTIVE: self._zone_active,

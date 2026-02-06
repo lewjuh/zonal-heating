@@ -81,7 +81,13 @@ class ZoneStateMachine:
 
         # Periodic safety check timer
         self._periodic_timer: asyncio.TimerHandle | None = None
-        self._periodic_interval = 60  # Seconds between periodic checks
+        self._periodic_interval = 300  # Seconds between periodic checks
+
+        # Debounce timer for room change events
+        self._eval_debounce_timer: asyncio.TimerHandle | None = None
+
+        # Concurrency guard for zone evaluation
+        self._eval_lock = asyncio.Lock()
 
         # Listeners
         self._remove_listeners: list[Callable] = []
@@ -182,6 +188,11 @@ class ZoneStateMachine:
             self._periodic_timer.cancel()
             self._periodic_timer = None
 
+        # Cancel debounce timer
+        if self._eval_debounce_timer:
+            self._eval_debounce_timer.cancel()
+            self._eval_debounce_timer = None
+
         for room in self.rooms:
             await room.async_stop()
 
@@ -196,14 +207,14 @@ class ZoneStateMachine:
 
     @callback
     def _async_room_changed(self, event: Event) -> None:
-        """Handle room state changes - triggers zone evaluation."""
-        entity_id = event.data.get("entity_id")
-        _LOGGER.debug(
-            "%s: Room climate changed (%s), triggering zone evaluation",
-            self.zone_name,
-            entity_id,
+        """Handle room state changes - debounced zone evaluation."""
+        if self._eval_debounce_timer:
+            self._eval_debounce_timer.cancel()
+
+        self._eval_debounce_timer = self.hass.loop.call_later(
+            1.0,
+            lambda: self.hass.async_create_task(self._async_evaluate_zone()),
         )
-        self.hass.async_create_task(self._async_evaluate_zone())
 
     @callback
     def _async_person_changed(self, event: Event) -> None:
@@ -355,18 +366,21 @@ class ZoneStateMachine:
         await self._async_evaluate_zone()
 
     async def _async_evaluate_zone(self) -> None:
-        """Evaluate zone state based on room states."""
+        """Evaluate zone state based on room states (with concurrency guard)."""
+        async with self._eval_lock:
+            await self._async_run_evaluation()
+
+    async def _async_run_evaluation(self) -> None:
+        """Perform the actual zone evaluation."""
         if self._retry_timer:
             self._retry_timer.cancel()
             self._retry_timer = None
 
-        _LOGGER.info("=" * 60)
-        _LOGGER.info("%s: ZONE EVALUATION STARTED", self.zone_name)
-        _LOGGER.info("=" * 60)
+        _LOGGER.debug("%s: ZONE EVALUATION STARTED", self.zone_name)
 
         # Check if away mode is pending (timer running)
         if self._away_mode_pending:
-            _LOGGER.info(
+            _LOGGER.debug(
                 "%s: Away mode pending - waiting %d min delay (timer active)",
                 self.zone_name,
                 self.away_mode_delay,
@@ -399,47 +413,30 @@ class ZoneStateMachine:
             await self._async_handle_away_mode()
             return
 
-        # Find rooms that need heat, sorted by priority (highest first)
-        rooms_needing_heat = sorted(
-            [
-                room
-                for room in self.rooms
-                if room.needs_heat and room.temperature_deficit > 0
-            ],
-            key=lambda r: r.temperature_deficit,
-            reverse=True,
-        )
-
-        _LOGGER.info(
-            "%s: Room status - %d/%d rooms need heat",
-            self.zone_name,
-            len(rooms_needing_heat),
-            len(self.rooms),
-        )
-
+        # Build rooms needing heat and log in a single pass
+        rooms_needing_heat = []
         for room in self.rooms:
             if room.needs_heat and room.temperature_deficit > 0:
-                _LOGGER.info(
+                rooms_needing_heat.append(room)
+                _LOGGER.debug(
                     "%s:   > %s NEEDS HEAT (deficit: %.1f C)",
                     self.zone_name,
                     room.room_name,
                     room.temperature_deficit,
                 )
-            else:
-                _LOGGER.debug(
-                    "%s:   x %s does not need heat",
-                    self.zone_name,
-                    room.room_name,
-                )
+
+        rooms_needing_heat.sort(key=lambda r: r.temperature_deficit, reverse=True)
+
+        _LOGGER.debug(
+            "%s: %d/%d rooms need heat, zone %s, desired %s",
+            self.zone_name,
+            len(rooms_needing_heat),
+            len(self.rooms),
+            "ON" if self._zone_is_on else "OFF",
+            "ON" if rooms_needing_heat else "OFF",
+        )
 
         desired_zone_on = len(rooms_needing_heat) > 0
-
-        _LOGGER.info(
-            "%s: Current zone state: %s, Desired zone state: %s",
-            self.zone_name,
-            "ON" if self._zone_is_on else "OFF",
-            "ON" if desired_zone_on else "OFF",
-        )
 
         if self._should_respect_min_cycle_time(desired_zone_on):
             return

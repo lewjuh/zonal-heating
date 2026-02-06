@@ -30,7 +30,7 @@ CONF_OVERHEAT_THRESHOLD = "overheat_threshold"
 CONF_CALIBRATION_SYNC = "calibration_sync"
 
 # Default values
-DEFAULT_TEMP_DIFFERENTIAL = 0.5  # °C below target to trigger heat
+DEFAULT_TEMP_DIFFERENTIAL = 0.25  # °C below target to trigger heat
 DEFAULT_MIN_CYCLE_TIME = 5  # Minutes between zone state changes
 DEFAULT_WINDOW_DELAY = 30  # Seconds to wait after window opens
 DEFAULT_PRIORITY = 5  # Default room priority (1-10 scale)

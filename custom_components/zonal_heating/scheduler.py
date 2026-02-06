@@ -136,17 +136,16 @@ class RoomScheduler:
         if not schedule:
             return None
 
-        sorted_points = sorted(schedule, key=lambda p: p["time"])
         active_temp = None
 
-        for point in sorted_points:
+        for point in schedule:
             if point["time"] <= current_time:
                 active_temp = point["temperature"]
             else:
                 break
 
-        if active_temp is None and sorted_points:
-            active_temp = sorted_points[-1]["temperature"]
+        if active_temp is None:
+            active_temp = schedule[-1]["temperature"]
 
         return active_temp
 
@@ -228,13 +227,11 @@ class RoomScheduler:
         if not schedule:
             return None
 
-        sorted_points = sorted(schedule, key=lambda p: p["time"])
-
-        for point in sorted_points:
+        for point in schedule:
             if point["time"] > current_time:
                 return (point["time"], point["temperature"])
 
-        if sorted_points:
-            return (sorted_points[0]["time"], sorted_points[0]["temperature"])
+        if schedule:
+            return (schedule[0]["time"], schedule[0]["temperature"])
 
         return None

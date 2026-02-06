@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 
@@ -60,10 +59,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Initialize storage for this entry
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
-        "zone_states": {},  # Track last zone thermostat states
-        "coordinators": {},  # Will hold zone coordinators
-        "schedulers": {},  # Will hold room schedulers
-        "storage": storage,  # Persistent storage instance
+        "coordinators": {},
+        "schedulers": {},
+        "storage": storage,
     }
 
     # Forward setup to climate platform (this creates the entities)
@@ -87,19 +85,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry when options change."""
     await hass.config_entries.async_reload(entry.entry_id)
-
-
-async def _async_wait_for_entity(
-    hass: HomeAssistant, entity_id: str, timeout: float = 5
-) -> bool:
-    """Wait briefly for an entity to become available."""
-    start_time = hass.loop.time()
-    while (hass.loop.time() - start_time) < timeout:
-        state = hass.states.get(entity_id)
-        if state:
-            return True
-        await asyncio.sleep(0.2)
-    return False
 
 
 async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -130,15 +115,6 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
         zone_name = zone.get("name", f"Zone {zone_idx}")
         zone_climate = zone.get(CONF_ZONE_THERMOSTAT)
 
-        # Brief wait for zone thermostat entity (state listeners handle late arrivals)
-        if zone_climate:
-            if not await _async_wait_for_entity(hass, zone_climate, timeout=5):
-                _LOGGER.debug(
-                    "Zone %s: Zone thermostat %s not yet available, will use state listeners",
-                    zone_name,
-                    zone_climate,
-                )
-
         # Create room state machines for this zone
         room_state_machines = []
         for room in zone.get(CONF_ROOMS, []):
@@ -150,14 +126,6 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
             if not trv_entity:
                 _LOGGER.warning("Room %s has no TRV entity, skipping", room_name)
                 continue
-
-            # Brief wait for TRV entity (state listeners handle late arrivals)
-            if not await _async_wait_for_entity(hass, trv_entity, timeout=3):
-                _LOGGER.debug(
-                    "Room %s: TRV %s not yet available, will use state listeners",
-                    room_name,
-                    trv_entity,
-                )
 
             room_sm = RoomStateMachine(
                 hass=hass,
@@ -281,17 +249,17 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
     if hass.services.has_service(DOMAIN, "set_room_schedule"):
         return
 
-    async def _find_scheduler(room_name: str) -> RoomScheduler | None:
+    def _find_scheduler(room_name: str) -> RoomScheduler | None:
         """Find the scheduler for a room across all entries."""
-        for entry_id, data in hass.data.get(DOMAIN, {}).items():
+        for eid, data in hass.data.get(DOMAIN, {}).items():
             if isinstance(data, dict) and "schedulers" in data:
                 if room_name in data["schedulers"]:
                     return data["schedulers"][room_name]
         return None
 
-    async def _find_storage(room_name: str) -> ZonalHeatingStorage | None:
+    def _find_storage(room_name: str) -> ZonalHeatingStorage | None:
         """Find the storage instance for a room."""
-        for entry_id, data in hass.data.get(DOMAIN, {}).items():
+        for eid, data in hass.data.get(DOMAIN, {}).items():
             if isinstance(data, dict) and "schedulers" in data:
                 if room_name in data["schedulers"]:
                     return data.get("storage")
@@ -301,7 +269,7 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
         """Handle set_room_schedule service call."""
         room_name = call.data["room_name"]
 
-        storage = await _find_storage(room_name)
+        storage = _find_storage(room_name)
         if not storage:
             _LOGGER.error("set_room_schedule: Room '%s' not found", room_name)
             return
@@ -315,7 +283,7 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
         storage.set_room_schedule(room_name, schedule)
         await storage.async_save()
 
-        scheduler = await _find_scheduler(room_name)
+        scheduler = _find_scheduler(room_name)
         if scheduler:
             await scheduler.async_reload_schedule()
 
@@ -325,7 +293,7 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
         """Handle get_room_schedule service call."""
         room_name = call.data["room_name"]
 
-        storage = await _find_storage(room_name)
+        storage = _find_storage(room_name)
         if not storage:
             return {"error": f"Room '{room_name}' not found"}
 
@@ -338,7 +306,7 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
         """Handle delete_room_schedule service call."""
         room_name = call.data["room_name"]
 
-        storage = await _find_storage(room_name)
+        storage = _find_storage(room_name)
         if not storage:
             _LOGGER.error("delete_room_schedule: Room '%s' not found", room_name)
             return
@@ -346,7 +314,7 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
         storage.delete_room_schedule(room_name)
         await storage.async_save()
 
-        scheduler = await _find_scheduler(room_name)
+        scheduler = _find_scheduler(room_name)
         if scheduler:
             await scheduler.async_reload_schedule()
 
@@ -359,7 +327,7 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
         time = call.data["time"]
         temperature = call.data["temperature"]
 
-        storage = await _find_storage(room_name)
+        storage = _find_storage(room_name)
         if not storage:
             _LOGGER.error("add_schedule_point: Room '%s' not found", room_name)
             return
@@ -378,7 +346,7 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
         storage.set_room_schedule(room_name, schedule)
         await storage.async_save()
 
-        scheduler = await _find_scheduler(room_name)
+        scheduler = _find_scheduler(room_name)
         if scheduler:
             await scheduler.async_reload_schedule()
 
@@ -390,7 +358,7 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
         timeline = call.data["timeline"]
         time = call.data["time"]
 
-        storage = await _find_storage(room_name)
+        storage = _find_storage(room_name)
         if not storage:
             _LOGGER.error("remove_schedule_point: Room '%s' not found", room_name)
             return
@@ -406,7 +374,7 @@ async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> N
         storage.set_room_schedule(room_name, schedule)
         await storage.async_save()
 
-        scheduler = await _find_scheduler(room_name)
+        scheduler = _find_scheduler(room_name)
         if scheduler:
             await scheduler.async_reload_schedule()
 
