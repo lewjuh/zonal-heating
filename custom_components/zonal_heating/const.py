@@ -52,6 +52,11 @@ PRIORITY_MAX = 10
 # Service names
 SERVICE_SET_PRIORITY = "set_priority"
 SERVICE_GET_STATS = "get_stats"
+SERVICE_SET_ROOM_SCHEDULE = "set_room_schedule"
+SERVICE_GET_ROOM_SCHEDULE = "get_room_schedule"
+SERVICE_DELETE_ROOM_SCHEDULE = "delete_room_schedule"
+SERVICE_ADD_SCHEDULE_POINT = "add_schedule_point"
+SERVICE_REMOVE_SCHEDULE_POINT = "remove_schedule_point"
 
 # Attributes
 ATTR_ZONE_ACTIVE = "zone_active"
@@ -61,3 +66,12 @@ ATTR_PRIORITY = "priority"
 ATTR_AWAY_MODE = "away_mode"
 ATTR_PEOPLE_HOME = "people_home"
 ATTR_OVERHEATED = "overheated"
+ATTR_SCHEDULE_ENABLED = "schedule_enabled"
+ATTR_SCHEDULED_TEMPERATURE = "scheduled_temperature"
+ATTR_MANUAL_OVERRIDE_ACTIVE = "manual_override_active"
+ATTR_QUEUED_TEMPERATURE = "queued_temperature"
+ATTR_NEXT_SCHEDULE_TIME = "next_schedule_time"
+ATTR_NEXT_SCHEDULE_TEMP = "next_schedule_temp"
+
+# Schedule configuration
+CONF_SCHEDULES = "schedules"

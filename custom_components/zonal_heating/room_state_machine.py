@@ -26,6 +26,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from .scheduler import RoomScheduler
     from .storage import ZonalHeatingStorage
 
 _LOGGER = logging.getLogger(__name__)
@@ -91,6 +92,13 @@ class RoomStateMachine:
 
         # Listeners
         self._remove_listeners: list[Callable] = []
+
+        # Scheduler reference (set after creation)
+        self._scheduler: "RoomScheduler | None" = None
+
+    def set_scheduler(self, scheduler: "RoomScheduler") -> None:
+        """Set the scheduler for this room."""
+        self._scheduler = scheduler
 
     async def async_start(self) -> None:
         """Start the room state machine."""
@@ -298,6 +306,10 @@ class RoomStateMachine:
                 self.room_name,
             )
             return
+
+        # Check if scheduler has a queued temperature to apply
+        if self._scheduler:
+            await self._scheduler.async_check_queued_temperature()
 
         # Restore TRV target temperature
         await self._async_restore_target_temp()
@@ -1184,6 +1196,10 @@ class RoomStateMachine:
                 self._current_temp,
                 overheat_limit,
             )
+
+            # Check if scheduler has a queued temperature to apply
+            if self._scheduler:
+                await self._scheduler.async_check_queued_temperature()
 
             # Restore TRV target temperature
             await self._async_restore_target_temp()

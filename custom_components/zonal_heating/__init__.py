@@ -8,7 +8,7 @@ from pathlib import Path
 
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 
 from .const import (
     CONF_AWAY_MODE_DELAY,
@@ -37,6 +37,7 @@ from .const import (
     PLATFORMS,
 )
 from .room_state_machine import RoomStateMachine
+from .scheduler import RoomScheduler
 from .storage import ZonalHeatingStorage
 from .zone_state_machine import ZoneStateMachine
 
@@ -59,6 +60,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = {
         "zone_states": {},  # Track last zone thermostat states
         "coordinators": {},  # Will hold zone coordinators
+        "schedulers": {},  # Will hold room schedulers
         "storage": storage,  # Persistent storage instance
     }
 
@@ -67,6 +69,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Now set up zone coordinators after entities are created
     await _async_setup_coordinators(hass, entry)
+
+    # Register services
+    await _async_register_services(hass, entry)
 
     # Register options update listener
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
@@ -166,6 +171,16 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
             )
             room_state_machines.append(room_sm)
 
+            # Create scheduler for this room
+            scheduler = RoomScheduler(
+                hass=hass,
+                room_name=room_name,
+                room_state_machine=room_sm,
+                storage=storage,
+            )
+            room_sm.set_scheduler(scheduler)
+            hass.data[DOMAIN][entry.entry_id]["schedulers"][room_name] = scheduler
+
         if not room_state_machines:
             _LOGGER.warning(
                 "No room state machines created for zone %s, skipping",
@@ -189,6 +204,12 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
         await zone_sm.async_start()
         coordinators[zone_name] = zone_sm
 
+        # Start schedulers for rooms in this zone
+        schedulers = hass.data[DOMAIN][entry.entry_id]["schedulers"]
+        for room_sm in room_state_machines:
+            if room_sm.room_name in schedulers:
+                await schedulers[room_sm.room_name].async_start()
+
         _LOGGER.info("Started zone state machine for: %s", zone_name)
 
 
@@ -204,15 +225,20 @@ async def _async_register_card(hass: HomeAssistant) -> None:
     card_url = f"/{DOMAIN}/zonal-heating-card.js"
 
     await hass.http.async_register_static_paths(
-        [StaticPathConfig(card_url, str(www_path / "zonal-heating-card.js"), False)]
+        [StaticPathConfig(card_url, str(www_path / "zonal-heating-card.js"), cache_headers=False)]
     )
 
-    _LOGGER.info("Registered zonal-heating-card at %s", card_url)
+    _LOGGER.info("Registered zonal-heating-card at %s (cache disabled)", card_url)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.debug("Unloading zonal_heating integration for entry %s", entry.entry_id)
+
+    # Stop all schedulers
+    schedulers = hass.data[DOMAIN][entry.entry_id].get("schedulers", {})
+    for scheduler in schedulers.values():
+        await scheduler.async_stop()
 
     # Stop all coordinators (this triggers state save in each state machine)
     coordinators = hass.data[DOMAIN][entry.entry_id]["coordinators"]
@@ -235,3 +261,181 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     return unload_ok
+
+
+async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Register zonal heating services."""
+    if hass.services.has_service(DOMAIN, "set_room_schedule"):
+        return
+
+    async def _find_scheduler(room_name: str) -> RoomScheduler | None:
+        """Find the scheduler for a room across all entries."""
+        for entry_id, data in hass.data.get(DOMAIN, {}).items():
+            if isinstance(data, dict) and "schedulers" in data:
+                if room_name in data["schedulers"]:
+                    return data["schedulers"][room_name]
+        return None
+
+    async def _find_storage(room_name: str) -> ZonalHeatingStorage | None:
+        """Find the storage instance for a room."""
+        for entry_id, data in hass.data.get(DOMAIN, {}).items():
+            if isinstance(data, dict) and "schedulers" in data:
+                if room_name in data["schedulers"]:
+                    return data.get("storage")
+        return None
+
+    async def handle_set_room_schedule(call: ServiceCall) -> None:
+        """Handle set_room_schedule service call."""
+        room_name = call.data.get("room_name")
+        if not room_name:
+            _LOGGER.error("set_room_schedule: room_name is required")
+            return
+
+        storage = await _find_storage(room_name)
+        if not storage:
+            _LOGGER.error("set_room_schedule: Room '%s' not found", room_name)
+            return
+
+        schedule = {
+            "enabled": call.data.get("enabled", True),
+            "weekday": call.data.get("weekday", []),
+            "weekend": call.data.get("weekend", []),
+        }
+
+        storage.set_room_schedule(room_name, schedule)
+        await storage.async_save()
+
+        scheduler = await _find_scheduler(room_name)
+        if scheduler:
+            await scheduler.async_reload_schedule()
+
+        _LOGGER.info("Set schedule for room '%s'", room_name)
+
+    async def handle_get_room_schedule(call: ServiceCall) -> dict:
+        """Handle get_room_schedule service call."""
+        room_name = call.data.get("room_name")
+        if not room_name:
+            return {"error": "room_name is required"}
+
+        storage = await _find_storage(room_name)
+        if not storage:
+            return {"error": f"Room '{room_name}' not found"}
+
+        schedule = storage.get_room_schedule(room_name)
+        if schedule:
+            return {"room_name": room_name, **schedule}
+        return {"room_name": room_name, "enabled": False, "weekday": [], "weekend": []}
+
+    async def handle_delete_room_schedule(call: ServiceCall) -> None:
+        """Handle delete_room_schedule service call."""
+        room_name = call.data.get("room_name")
+        if not room_name:
+            _LOGGER.error("delete_room_schedule: room_name is required")
+            return
+
+        storage = await _find_storage(room_name)
+        if not storage:
+            _LOGGER.error("delete_room_schedule: Room '%s' not found", room_name)
+            return
+
+        storage.delete_room_schedule(room_name)
+        await storage.async_save()
+
+        scheduler = await _find_scheduler(room_name)
+        if scheduler:
+            await scheduler.async_reload_schedule()
+
+        _LOGGER.info("Deleted schedule for room '%s'", room_name)
+
+    async def handle_add_schedule_point(call: ServiceCall) -> None:
+        """Handle add_schedule_point service call."""
+        room_name = call.data.get("room_name")
+        timeline = call.data.get("timeline")
+        time = call.data.get("time")
+        temperature = call.data.get("temperature")
+
+        if not all([room_name, timeline, time, temperature]):
+            _LOGGER.error("add_schedule_point: Missing required fields")
+            return
+
+        if timeline not in ("weekday", "weekend"):
+            _LOGGER.error("add_schedule_point: timeline must be 'weekday' or 'weekend'")
+            return
+
+        storage = await _find_storage(room_name)
+        if not storage:
+            _LOGGER.error("add_schedule_point: Room '%s' not found", room_name)
+            return
+
+        schedule = storage.get_room_schedule(room_name) or {
+            "enabled": True,
+            "weekday": [],
+            "weekend": [],
+        }
+
+        points = schedule.get(timeline, [])
+        points = [p for p in points if p.get("time") != time]
+        points.append({"time": time, "temperature": float(temperature)})
+        schedule[timeline] = points
+
+        storage.set_room_schedule(room_name, schedule)
+        await storage.async_save()
+
+        scheduler = await _find_scheduler(room_name)
+        if scheduler:
+            await scheduler.async_reload_schedule()
+
+        _LOGGER.info("Added schedule point for room '%s': %s at %s", room_name, temperature, time)
+
+    async def handle_remove_schedule_point(call: ServiceCall) -> None:
+        """Handle remove_schedule_point service call."""
+        room_name = call.data.get("room_name")
+        timeline = call.data.get("timeline")
+        time = call.data.get("time")
+
+        if not all([room_name, timeline, time]):
+            _LOGGER.error("remove_schedule_point: Missing required fields")
+            return
+
+        storage = await _find_storage(room_name)
+        if not storage:
+            _LOGGER.error("remove_schedule_point: Room '%s' not found", room_name)
+            return
+
+        schedule = storage.get_room_schedule(room_name)
+        if not schedule:
+            _LOGGER.warning("remove_schedule_point: No schedule for room '%s'", room_name)
+            return
+
+        points = schedule.get(timeline, [])
+        schedule[timeline] = [p for p in points if p.get("time") != time]
+
+        storage.set_room_schedule(room_name, schedule)
+        await storage.async_save()
+
+        scheduler = await _find_scheduler(room_name)
+        if scheduler:
+            await scheduler.async_reload_schedule()
+
+        _LOGGER.info("Removed schedule point for room '%s' at %s", room_name, time)
+
+    hass.services.async_register(
+        DOMAIN, "set_room_schedule", handle_set_room_schedule
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "get_room_schedule",
+        handle_get_room_schedule,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN, "delete_room_schedule", handle_delete_room_schedule
+    )
+    hass.services.async_register(
+        DOMAIN, "add_schedule_point", handle_add_schedule_point
+    )
+    hass.services.async_register(
+        DOMAIN, "remove_schedule_point", handle_remove_schedule_point
+    )
+
+    _LOGGER.info("Registered zonal_heating schedule services")

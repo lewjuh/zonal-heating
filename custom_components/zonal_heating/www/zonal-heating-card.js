@@ -10,12 +10,26 @@ class ZonalHeatingCard extends LitElement {
       hass: { type: Object },
       config: { type: Object },
       _showDebug: { type: Boolean },
+      _scheduleModalOpen: { type: Boolean },
+      _selectedRoom: { type: String },
+      _editingSchedule: { type: Object },
+      _activeTab: { type: String },
+      _addingPoint: { type: Boolean },
+      _newPointTime: { type: String },
+      _newPointTemp: { type: Number },
     };
   }
 
   constructor() {
     super();
     this._showDebug = false;
+    this._scheduleModalOpen = false;
+    this._selectedRoom = null;
+    this._editingSchedule = null;
+    this._activeTab = "weekday";
+    this._addingPoint = false;
+    this._newPointTime = "08:00";
+    this._newPointTemp = 20;
   }
 
   static getConfigElement() {
@@ -346,6 +360,296 @@ class ZonalHeatingCard extends LitElement {
         color: var(--secondary-text-color);
         border: 1px solid var(--divider-color);
       }
+      .room-actions {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-left: 8px;
+      }
+      .schedule-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        border: none;
+        background-color: var(--divider-color);
+        cursor: pointer;
+        transition: background-color 0.2s;
+      }
+      .schedule-btn:hover {
+        background-color: var(--primary-color);
+      }
+      .schedule-btn ha-icon {
+        --mdc-icon-size: 16px;
+        width: 16px;
+        height: 16px;
+        color: var(--primary-text-color);
+      }
+      .schedule-btn:hover ha-icon {
+        color: var(--text-primary-color);
+      }
+      .schedule-btn.active {
+        background-color: var(--primary-color);
+      }
+      .schedule-btn.active ha-icon {
+        color: var(--text-primary-color);
+      }
+      .modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: rgba(0, 0, 0, 0.6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 999;
+      }
+      .modal-content {
+        background-color: var(--card-background-color);
+        border-radius: 12px;
+        width: 90%;
+        max-width: 500px;
+        max-height: 85vh;
+        overflow-y: auto;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      }
+      .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 16px;
+        border-bottom: 1px solid var(--divider-color);
+      }
+      .modal-title {
+        font-size: 1.2em;
+        font-weight: 500;
+      }
+      .modal-close {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        border: none;
+        background: transparent;
+        cursor: pointer;
+      }
+      .modal-close:hover {
+        background-color: var(--divider-color);
+      }
+      .modal-close ha-icon {
+        --mdc-icon-size: 20px;
+        color: var(--secondary-text-color);
+      }
+      .modal-body {
+        padding: 16px;
+      }
+      .schedule-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px;
+        background-color: var(--secondary-background-color);
+        border-radius: 8px;
+        margin-bottom: 16px;
+      }
+      .schedule-toggle-label {
+        font-weight: 500;
+      }
+      .schedule-toggle input[type="checkbox"] {
+        width: 40px;
+        height: 20px;
+        cursor: pointer;
+      }
+      .tab-container {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      .tab-btn {
+        flex: 1;
+        padding: 10px;
+        border: 1px solid var(--divider-color);
+        border-radius: 8px;
+        background-color: transparent;
+        cursor: pointer;
+        font-size: 0.9em;
+        color: var(--primary-text-color);
+        transition: all 0.2s;
+      }
+      .tab-btn.active {
+        background-color: var(--primary-color);
+        color: var(--text-primary-color);
+        border-color: var(--primary-color);
+      }
+      .timeline-container {
+        margin-bottom: 16px;
+      }
+      .timeline-header {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 8px;
+        font-size: 0.75em;
+        color: var(--secondary-text-color);
+      }
+      .timeline {
+        position: relative;
+        height: 60px;
+        background: linear-gradient(to right,
+          var(--secondary-background-color) 0%,
+          var(--secondary-background-color) 100%);
+        border-radius: 8px;
+        border: 1px solid var(--divider-color);
+        cursor: pointer;
+      }
+      .timeline-bar {
+        position: absolute;
+        top: 50%;
+        left: 0;
+        right: 0;
+        height: 4px;
+        background-color: var(--divider-color);
+        transform: translateY(-50%);
+      }
+      .timeline-segment {
+        position: absolute;
+        top: 50%;
+        height: 4px;
+        transform: translateY(-50%);
+        background-color: var(--primary-color);
+      }
+      .schedule-point {
+        position: absolute;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background-color: var(--primary-color);
+        border: 2px solid var(--card-background-color);
+        cursor: pointer;
+        transition: transform 0.2s;
+        z-index: 2;
+      }
+      .schedule-point:hover {
+        transform: translate(-50%, -50%) scale(1.2);
+      }
+      .schedule-point-label {
+        position: absolute;
+        top: -24px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 0.7em;
+        white-space: nowrap;
+        background-color: var(--card-background-color);
+        padding: 2px 4px;
+        border-radius: 4px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+      }
+      .points-list {
+        max-height: 200px;
+        overflow-y: auto;
+      }
+      .point-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 12px;
+        background-color: var(--secondary-background-color);
+        border-radius: 8px;
+        margin-bottom: 8px;
+      }
+      .point-info {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .point-time {
+        font-weight: 500;
+        font-size: 1.1em;
+      }
+      .point-temp {
+        color: var(--primary-color);
+        font-weight: 500;
+      }
+      .point-delete {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        border: none;
+        background-color: rgba(244, 67, 54, 0.1);
+        cursor: pointer;
+      }
+      .point-delete:hover {
+        background-color: rgba(244, 67, 54, 0.2);
+      }
+      .point-delete ha-icon {
+        --mdc-icon-size: 16px;
+        color: var(--error-color, #f44336);
+      }
+      .add-point-section {
+        padding: 12px;
+        background-color: var(--secondary-background-color);
+        border-radius: 8px;
+        margin-top: 12px;
+      }
+      .add-point-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .add-point-title {
+        font-weight: 500;
+      }
+      .add-point-form {
+        display: flex;
+        gap: 8px;
+        align-items: flex-end;
+      }
+      .form-group {
+        flex: 1;
+      }
+      .form-group label {
+        display: block;
+        font-size: 0.8em;
+        color: var(--secondary-text-color);
+        margin-bottom: 4px;
+      }
+      .form-group input {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid var(--divider-color);
+        border-radius: 6px;
+        background-color: var(--card-background-color);
+        color: var(--primary-text-color);
+        font-size: 1em;
+      }
+      .add-point-btn {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 6px;
+        background-color: var(--primary-color);
+        color: var(--text-primary-color);
+        cursor: pointer;
+        font-weight: 500;
+      }
+      .add-point-btn:hover {
+        opacity: 0.9;
+      }
+      .no-points {
+        text-align: center;
+        padding: 20px;
+        color: var(--secondary-text-color);
+      }
     `;
   }
 
@@ -389,6 +693,8 @@ class ZonalHeatingCard extends LitElement {
         </div>
 
         ${this._showDebug ? this._renderDebug(zoneAttrs) : ""}
+
+        ${this._scheduleModalOpen ? this._renderScheduleModal() : ""}
       </ha-card>
     `;
   }
@@ -569,6 +875,8 @@ class ZonalHeatingCard extends LitElement {
     const currentTemp = room.current_temp !== null ? room.current_temp.toFixed(1) : "--";
     const targetTemp = room.target_temp !== null ? room.target_temp.toFixed(1) : "--";
 
+    const hasSchedule = room.schedule_enabled;
+
     return html`
       <div class="room-card ${status}">
         <div class="room-icon ${status}">
@@ -583,6 +891,15 @@ class ZonalHeatingCard extends LitElement {
             ${room.deficit > 0 ? html`<span class="temp-deficit">(−${room.deficit.toFixed(1)}°)</span>` : ""}
           </div>
           <div class="room-reason">${this._getRoomReason(room)}</div>
+        </div>
+        <div class="room-actions">
+          <button
+            class="schedule-btn ${hasSchedule ? 'active' : ''}"
+            @click=${(e) => this._openScheduleModal(e, room.name)}
+            title="Schedule"
+          >
+            <ha-icon icon="mdi:calendar-clock"></ha-icon>
+          </button>
         </div>
       </div>
     `;
@@ -675,6 +992,271 @@ class ZonalHeatingCard extends LitElement {
   _toggleDebug() {
     this._showDebug = !this._showDebug;
     this.requestUpdate();
+  }
+
+  async _openScheduleModal(e, roomName) {
+    e.stopPropagation();
+    this._selectedRoom = roomName;
+    this._activeTab = "weekday";
+
+    try {
+      const response = await this.hass.callService(
+        "zonal_heating",
+        "get_room_schedule",
+        { room_name: roomName },
+        undefined,
+        true,
+        true
+      );
+
+      if (response && response.response) {
+        this._editingSchedule = {
+          enabled: response.response.enabled || false,
+          weekday: response.response.weekday || [],
+          weekend: response.response.weekend || [],
+        };
+      } else {
+        this._editingSchedule = {
+          enabled: false,
+          weekday: [],
+          weekend: [],
+        };
+      }
+    } catch (error) {
+      console.error("Failed to load schedule:", error);
+      this._editingSchedule = {
+        enabled: false,
+        weekday: [],
+        weekend: [],
+      };
+    }
+
+    this._scheduleModalOpen = true;
+    this.requestUpdate();
+  }
+
+  _closeScheduleModal() {
+    this._scheduleModalOpen = false;
+    this._selectedRoom = null;
+    this._editingSchedule = null;
+    this.requestUpdate();
+  }
+
+  _renderScheduleModal() {
+    if (!this._editingSchedule) return html``;
+
+    const points = this._activeTab === "weekday"
+      ? this._editingSchedule.weekday
+      : this._editingSchedule.weekend;
+
+    return html`
+      <div class="modal-overlay" @click=${this._closeScheduleModal}>
+        <div class="modal-content" @click=${(e) => e.stopPropagation()}>
+          <div class="modal-header">
+            <span class="modal-title">${this._selectedRoom} Schedule</span>
+            <button class="modal-close" @click=${this._closeScheduleModal}>
+              <ha-icon icon="mdi:close"></ha-icon>
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="schedule-toggle">
+              <span class="schedule-toggle-label">Schedule Enabled</span>
+              <input
+                type="checkbox"
+                .checked=${this._editingSchedule.enabled}
+                @change=${this._toggleScheduleEnabled}
+              />
+            </div>
+
+            <div class="tab-container">
+              <button
+                class="tab-btn ${this._activeTab === 'weekday' ? 'active' : ''}"
+                @click=${() => this._switchTab('weekday')}
+              >
+                Weekdays (Mon-Fri)
+              </button>
+              <button
+                class="tab-btn ${this._activeTab === 'weekend' ? 'active' : ''}"
+                @click=${() => this._switchTab('weekend')}
+              >
+                Weekends (Sat-Sun)
+              </button>
+            </div>
+
+            ${this._renderTimeline(points)}
+
+            <div class="points-list">
+              ${points.length === 0
+                ? html`<div class="no-points">No schedule points. Add one below.</div>`
+                : points.map((point) => this._renderPointItem(point))}
+            </div>
+
+            ${this._renderAddPointForm()}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderTimeline(points) {
+    const sortedPoints = [...points].sort((a, b) => a.time.localeCompare(b.time));
+
+    return html`
+      <div class="timeline-container">
+        <div class="timeline-header">
+          <span>00:00</span>
+          <span>06:00</span>
+          <span>12:00</span>
+          <span>18:00</span>
+          <span>24:00</span>
+        </div>
+        <div class="timeline">
+          <div class="timeline-bar"></div>
+          ${sortedPoints.map((point, index) => {
+            const pos = this._timeToPercent(point.time);
+            return html`
+              <div
+                class="schedule-point"
+                style="left: ${pos}%"
+                title="${point.time} - ${point.temperature}°C"
+              >
+                <span class="schedule-point-label">${point.temperature}°</span>
+              </div>
+            `;
+          })}
+        </div>
+      </div>
+    `;
+  }
+
+  _renderPointItem(point) {
+    return html`
+      <div class="point-item">
+        <div class="point-info">
+          <span class="point-time">${point.time}</span>
+          <span class="point-temp">${point.temperature}°C</span>
+        </div>
+        <button
+          class="point-delete"
+          @click=${() => this._removePoint(point.time)}
+        >
+          <ha-icon icon="mdi:delete"></ha-icon>
+        </button>
+      </div>
+    `;
+  }
+
+  _renderAddPointForm() {
+    return html`
+      <div class="add-point-section">
+        <div class="add-point-header">
+          <span class="add-point-title">Add Schedule Point</span>
+        </div>
+        <div class="add-point-form">
+          <div class="form-group">
+            <label>Time</label>
+            <input
+              type="time"
+              .value=${this._newPointTime}
+              @input=${(e) => { this._newPointTime = e.target.value; }}
+            />
+          </div>
+          <div class="form-group">
+            <label>Temperature</label>
+            <input
+              type="number"
+              min="5"
+              max="30"
+              step="0.5"
+              .value=${this._newPointTemp}
+              @input=${(e) => { this._newPointTemp = parseFloat(e.target.value); }}
+            />
+          </div>
+          <button class="add-point-btn" @click=${this._addPoint}>Add</button>
+        </div>
+      </div>
+    `;
+  }
+
+  _timeToPercent(time) {
+    const [hours, minutes] = time.split(":").map(Number);
+    const totalMinutes = hours * 60 + minutes;
+    return (totalMinutes / 1440) * 100;
+  }
+
+  _switchTab(tab) {
+    this._activeTab = tab;
+    this.requestUpdate();
+  }
+
+  async _toggleScheduleEnabled(e) {
+    this._editingSchedule.enabled = e.target.checked;
+    await this._saveSchedule();
+  }
+
+  async _addPoint() {
+    if (!this._newPointTime || !this._newPointTemp) return;
+
+    try {
+      await this.hass.callService("zonal_heating", "add_schedule_point", {
+        room_name: this._selectedRoom,
+        timeline: this._activeTab,
+        time: this._newPointTime,
+        temperature: this._newPointTemp,
+      });
+
+      const points = this._activeTab === "weekday"
+        ? this._editingSchedule.weekday
+        : this._editingSchedule.weekend;
+
+      const existingIndex = points.findIndex(p => p.time === this._newPointTime);
+      if (existingIndex >= 0) {
+        points[existingIndex].temperature = this._newPointTemp;
+      } else {
+        points.push({ time: this._newPointTime, temperature: this._newPointTemp });
+      }
+      points.sort((a, b) => a.time.localeCompare(b.time));
+
+      this.requestUpdate();
+    } catch (error) {
+      console.error("Failed to add schedule point:", error);
+    }
+  }
+
+  async _removePoint(time) {
+    try {
+      await this.hass.callService("zonal_heating", "remove_schedule_point", {
+        room_name: this._selectedRoom,
+        timeline: this._activeTab,
+        time: time,
+      });
+
+      const points = this._activeTab === "weekday"
+        ? this._editingSchedule.weekday
+        : this._editingSchedule.weekend;
+
+      const index = points.findIndex(p => p.time === time);
+      if (index >= 0) {
+        points.splice(index, 1);
+      }
+
+      this.requestUpdate();
+    } catch (error) {
+      console.error("Failed to remove schedule point:", error);
+    }
+  }
+
+  async _saveSchedule() {
+    try {
+      await this.hass.callService("zonal_heating", "set_room_schedule", {
+        room_name: this._selectedRoom,
+        enabled: this._editingSchedule.enabled,
+        weekday: this._editingSchedule.weekday,
+        weekend: this._editingSchedule.weekend,
+      });
+    } catch (error) {
+      console.error("Failed to save schedule:", error);
+    }
   }
 }
 
@@ -789,7 +1371,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c ZONAL-HEATING-CARD %c v1.2.0 ",
+  "%c ZONAL-HEATING-CARD %c v1.6.1 ",
   "color: white; background: #ff9800; font-weight: bold;",
   "color: #ff9800; background: white; font-weight: bold;"
 );

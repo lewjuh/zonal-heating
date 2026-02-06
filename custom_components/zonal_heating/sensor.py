@@ -159,11 +159,15 @@ class ZoneDiagnosticSensor(SensorEntity):
                 time_until_cycle_allowed = round(coordinator.min_cycle_time - elapsed, 1)
                 cycle_time_blocking = True
 
+        # Get schedulers for schedule info
+        schedulers = self.hass.data[DOMAIN][self._entry_id].get("schedulers", {})
+
         # Count rooms needing heat
         rooms_needing_heat = []
         rooms_not_needing_heat = []
 
         for room in coordinator.rooms:
+            scheduler = schedulers.get(room.room_name)
             room_info = {
                 "name": room.room_name,
                 "needs_heat": room.needs_heat,
@@ -174,6 +178,7 @@ class ZoneDiagnosticSensor(SensorEntity):
                 "window_open": room._window_open,
                 "window_confirmed": room._window_open_confirmed,
                 "overheated": room._overheated,
+                "schedule_enabled": scheduler.schedule_enabled if scheduler else False,
             }
 
             if room.needs_heat and room.temperature_deficit > 0:

@@ -410,6 +410,16 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
 
         return None
 
+    def _get_room_scheduler(self):
+        """Get the room scheduler for this climate entity."""
+        if DOMAIN not in self.hass.data:
+            return None
+        if self._entry_id not in self.hass.data[DOMAIN]:
+            return None
+
+        schedulers = self.hass.data[DOMAIN][self._entry_id].get("schedulers", {})
+        return schedulers.get(self._room_name)
+
     @property
     def hvac_action(self) -> HVACAction:
         """Return the current HVAC action."""
@@ -484,6 +494,18 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
                 and zone_coordinator._retry_timer is not None
             )
 
+        # Add scheduler info if available
+        scheduler = self._get_room_scheduler()
+        if scheduler:
+            attrs["schedule_enabled"] = scheduler.schedule_enabled
+            attrs["scheduled_temperature"] = scheduler.get_current_scheduled_temp()
+            attrs["manual_override_active"] = scheduler.manual_override_active
+            attrs["queued_temperature"] = scheduler.queued_temperature
+            next_point = scheduler.get_next_schedule_point()
+            if next_point:
+                attrs["next_schedule_time"] = next_point[0]
+                attrs["next_schedule_temp"] = next_point[1]
+
         # Determine why active/inactive with detailed reason
         reason = self._build_reason(zone_coordinator, room_state_machine)
         if "active" in reason.lower() or "heating" in reason.lower():
@@ -554,6 +576,11 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             self._attr_name,
             temperature,
         )
+
+        # Notify scheduler of manual override
+        scheduler = self._get_room_scheduler()
+        if scheduler:
+            scheduler.handle_manual_override(temperature)
 
         # Forward temperature to the actual TRV
         _LOGGER.debug(
