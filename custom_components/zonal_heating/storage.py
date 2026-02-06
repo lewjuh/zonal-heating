@@ -194,13 +194,15 @@ class ZonalHeatingStorage:
 
 
 def parse_datetime(iso_string: str | None) -> datetime | None:
-    """Parse ISO datetime string safely."""
+    """Parse ISO datetime string safely, always returning timezone-aware."""
     if iso_string is None:
         return None
     try:
         parsed = dt_util.parse_datetime(iso_string)
-        if parsed is not None:
-            return parsed
-        return datetime.fromisoformat(iso_string)
+        if parsed is None:
+            parsed = datetime.fromisoformat(iso_string)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt_util.UTC)
+        return parsed
     except (ValueError, TypeError):
         return None
