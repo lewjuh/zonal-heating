@@ -72,6 +72,7 @@ class ZonalHeatingStorage:
         last_zone_change: datetime | None,
         away_mode_pending: bool,
         away_mode_timer_remaining: float | None,
+        pre_away_targets: dict[str, float] | None = None,
     ) -> None:
         """Set state for a zone."""
         if "zones" not in self._data:
@@ -82,6 +83,7 @@ class ZonalHeatingStorage:
             "last_zone_change": last_zone_change.isoformat() if last_zone_change else None,
             "away_mode_pending": away_mode_pending,
             "away_mode_timer_remaining": away_mode_timer_remaining,
+            "pre_away_targets": pre_away_targets,
             "saved_at": dt_util.now().isoformat(),
         }
 
@@ -97,6 +99,7 @@ class ZonalHeatingStorage:
         window_timer_remaining: float | None,
         trv_turned_off_for_window: bool,
         overheated: bool,
+        saved_target_temp: float | None = None,
     ) -> None:
         """Set state for a room."""
         if "rooms" not in self._data:
@@ -108,6 +111,7 @@ class ZonalHeatingStorage:
             "window_timer_remaining": window_timer_remaining,
             "trv_turned_off_for_window": trv_turned_off_for_window,
             "overheated": overheated,
+            "saved_target_temp": saved_target_temp,
             "saved_at": dt_util.now().isoformat(),
         }
 

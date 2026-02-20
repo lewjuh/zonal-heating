@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -362,36 +363,42 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             trv_mode,
         )
 
-        room_sm = self._get_room_state_machine()
-        if room_sm and room_sm.mqtt_control_available:
-            await room_sm.async_set_trv_target_temp(self._attr_target_temperature)
-            _LOGGER.debug(
-                "%s: Startup sync used room state machine MQTT control",
-                self._attr_name,
-            )
-        else:
-            await self.hass.services.async_call(
-                CLIMATE_DOMAIN,
-                "set_temperature",
-                {
-                    ATTR_ENTITY_ID: self._trv_entity,
-                    ATTR_TEMPERATURE: self._attr_target_temperature,
-                },
-                blocking=True,
-            )
+        try:
+            room_sm = self._get_room_state_machine()
+            if room_sm and room_sm.mqtt_control_available:
+                await room_sm.async_set_trv_target_temp(self._attr_target_temperature)
+                _LOGGER.debug(
+                    "%s: Startup sync used room state machine MQTT control",
+                    self._attr_name,
+                )
+            else:
+                await self.hass.services.async_call(
+                    CLIMATE_DOMAIN,
+                    "set_temperature",
+                    {
+                        ATTR_ENTITY_ID: self._trv_entity,
+                        ATTR_TEMPERATURE: self._attr_target_temperature,
+                    },
+                    blocking=True,
+                )
 
-        if needs_mode_sync:
-            await self.hass.services.async_call(
-                CLIMATE_DOMAIN,
-                "set_hvac_mode",
-                {
-                    ATTR_ENTITY_ID: self._trv_entity,
-                    "hvac_mode": HVACMode.HEAT,
-                },
-                blocking=True,
-            )
-            _LOGGER.info(
-                "%s: Startup sync set TRV to heat mode",
+            if needs_mode_sync:
+                await self.hass.services.async_call(
+                    CLIMATE_DOMAIN,
+                    "set_hvac_mode",
+                    {
+                        ATTR_ENTITY_ID: self._trv_entity,
+                        "hvac_mode": HVACMode.HEAT,
+                    },
+                    blocking=True,
+                )
+                _LOGGER.info(
+                    "%s: Startup sync set TRV to heat mode",
+                    self._attr_name,
+                )
+        except Exception:
+            _LOGGER.exception(
+                "%s: Startup sync failed - TRV may be unavailable",
                 self._attr_name,
             )
 
@@ -560,15 +567,22 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             temperature,
             self._trv_entity,
         )
-        await self.hass.services.async_call(
-            CLIMATE_DOMAIN,
-            "set_temperature",
-            {
-                ATTR_ENTITY_ID: self._trv_entity,
-                ATTR_TEMPERATURE: temperature,
-            },
-            blocking=False,
-        )
+        try:
+            await self.hass.services.async_call(
+                CLIMATE_DOMAIN,
+                "set_temperature",
+                {
+                    ATTR_ENTITY_ID: self._trv_entity,
+                    ATTR_TEMPERATURE: temperature,
+                },
+                blocking=False,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "%s: Failed to forward temperature to TRV %s",
+                self._attr_name,
+                self._trv_entity,
+            )
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new HVAC mode."""
@@ -586,12 +600,19 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             hvac_mode,
             self._trv_entity,
         )
-        await self.hass.services.async_call(
-            CLIMATE_DOMAIN,
-            "set_hvac_mode",
-            {
-                ATTR_ENTITY_ID: self._trv_entity,
-                "hvac_mode": hvac_mode,
-            },
-            blocking=False,
-        )
+        try:
+            await self.hass.services.async_call(
+                CLIMATE_DOMAIN,
+                "set_hvac_mode",
+                {
+                    ATTR_ENTITY_ID: self._trv_entity,
+                    "hvac_mode": hvac_mode,
+                },
+                blocking=False,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "%s: Failed to forward HVAC mode to TRV %s",
+                self._attr_name,
+                self._trv_entity,
+            )

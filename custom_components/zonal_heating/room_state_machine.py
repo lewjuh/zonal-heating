@@ -942,15 +942,22 @@ class RoomStateMachine:
                 )
 
         # Fallback to Home Assistant service
-        await self.hass.services.async_call(
-            CLIMATE_DOMAIN,
-            SERVICE_SET_TEMPERATURE,
-            {
-                ATTR_ENTITY_ID: self.climate_entity,
-                ATTR_TEMPERATURE: temperature,
-            },
-            blocking=True,
-        )
+        try:
+            await self.hass.services.async_call(
+                CLIMATE_DOMAIN,
+                SERVICE_SET_TEMPERATURE,
+                {
+                    ATTR_ENTITY_ID: self.climate_entity,
+                    ATTR_TEMPERATURE: temperature,
+                },
+                blocking=True,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "%s: Failed to set TRV target temperature to %.1f°C",
+                self.room_name,
+                temperature,
+            )
 
     async def async_update_climate_state(
         self, *, sync_calibration: bool = False
@@ -1108,30 +1115,29 @@ class RoomStateMachine:
             return
 
         overheat_limit = self._target_temp + self.overheat_threshold
-        is_overheating = self._current_temp >= overheat_limit
+        # Use hysteresis: engage at limit, clear 0.3C below limit
+        overheat_clear = overheat_limit - 0.3
 
-        if is_overheating:
-            if not was_overheated:
-                self._overheated = True
-                _LOGGER.info(
-                    "%s: OVERHEAT - Current: %.1f°C >= Limit: %.1f°C (Target: %.1f°C + %.1f°C), setting frost protection",
-                    self.room_name,
-                    self._current_temp,
-                    overheat_limit,
-                    self._target_temp,
-                    self.overheat_threshold,
-                )
-
-                # Set TRV to frost protection (never turn off TRVs)
-                await self._async_set_frost_protection()
-        elif was_overheated:
-            # Temperature dropped below overheat limit - restore target temp
-            self._overheated = False
+        if not was_overheated and self._current_temp >= overheat_limit:
+            self._overheated = True
             _LOGGER.info(
-                "%s: OVERHEAT CLEARED - Temp %.1f°C < Limit %.1f°C, restoring target temp",
+                "%s: OVERHEAT - Current: %.1f°C >= Limit: %.1f°C (Target: %.1f°C + %.1f°C), setting frost protection",
                 self.room_name,
                 self._current_temp,
                 overheat_limit,
+                self._target_temp,
+                self.overheat_threshold,
+            )
+
+            # Set TRV to frost protection (never turn off TRVs)
+            await self._async_set_frost_protection()
+        elif was_overheated and self._current_temp < overheat_clear:
+            self._overheated = False
+            _LOGGER.info(
+                "%s: OVERHEAT CLEARED - Temp %.1f°C < Clear threshold %.1f°C, restoring target temp",
+                self.room_name,
+                self._current_temp,
+                overheat_clear,
             )
 
             # Check if scheduler has a queued temperature to apply
@@ -1173,14 +1179,16 @@ class RoomStateMachine:
         self._window_open_confirmed = stored.get("window_open_confirmed", False)
         self._trv_turned_off_for_window = stored.get("trv_turned_off_for_window", False)
         self._overheated = stored.get("overheated", False)
+        self._saved_target_temp = stored.get("saved_target_temp")
 
         _LOGGER.info(
-            "%s: Restored state - window_open=%s, confirmed=%s, trv_off=%s, overheated=%s",
+            "%s: Restored state - window_open=%s, confirmed=%s, trv_off=%s, overheated=%s, saved_target=%s",
             self.room_name,
             self._window_open,
             self._window_open_confirmed,
             self._trv_turned_off_for_window,
             self._overheated,
+            self._saved_target_temp,
         )
 
         # Restore window timer if it was running
@@ -1211,6 +1219,7 @@ class RoomStateMachine:
             window_timer_remaining=window_timer_remaining,
             trv_turned_off_for_window=self._trv_turned_off_for_window,
             overheated=self._overheated,
+            saved_target_temp=self._saved_target_temp,
         )
 
         _LOGGER.debug(

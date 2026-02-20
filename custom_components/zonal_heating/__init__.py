@@ -171,14 +171,28 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
             storage=storage,
         )
 
-        await zone_sm.async_start()
+        try:
+            await zone_sm.async_start()
+        except Exception:
+            _LOGGER.exception(
+                "Failed to start zone state machine for %s - zone will be unavailable",
+                zone_name,
+            )
+            continue
+
         coordinators[zone_name] = zone_sm
 
         # Start schedulers for rooms in this zone
         schedulers = hass.data[DOMAIN][entry.entry_id]["schedulers"]
         for room_sm in room_state_machines:
             if room_sm.room_name in schedulers:
-                await schedulers[room_sm.room_name].async_start()
+                try:
+                    await schedulers[room_sm.room_name].async_start()
+                except Exception:
+                    _LOGGER.exception(
+                        "Failed to start scheduler for room %s",
+                        room_sm.room_name,
+                    )
 
         _LOGGER.info("Started zone state machine for: %s", zone_name)
 

@@ -806,6 +806,13 @@ class ZoneStateMachine:
 
             self._zone_is_on = turn_on
             self._last_zone_change = dt_util.now()
+        except Exception:
+            _LOGGER.exception(
+                "%s: Failed to change zone climate to %s - will retry on next evaluation",
+                self.zone_name,
+                "ON" if turn_on else "OFF",
+            )
+            return
         finally:
             self._updating_zone = False
 
@@ -841,11 +848,17 @@ class ZoneStateMachine:
         self._zone_is_on = stored.get("zone_is_on", False)
         self._last_zone_change = parse_datetime(stored.get("last_zone_change"))
 
+        # Restore pre-away target temperatures
+        pre_away = stored.get("pre_away_targets")
+        if pre_away and isinstance(pre_away, dict):
+            self._pre_away_targets = pre_away
+
         _LOGGER.info(
-            "%s: Restored state - zone_is_on=%s, last_change=%s",
+            "%s: Restored state - zone_is_on=%s, last_change=%s, pre_away_targets=%d rooms",
             self.zone_name,
             self._zone_is_on,
             self._last_zone_change,
+            len(self._pre_away_targets),
         )
 
         if stored.get("away_mode_pending") and stored.get("away_mode_timer_remaining"):
@@ -877,6 +890,7 @@ class ZoneStateMachine:
             last_zone_change=self._last_zone_change,
             away_mode_pending=self._away_mode_pending,
             away_mode_timer_remaining=away_timer_remaining,
+            pre_away_targets=self._pre_away_targets if self._pre_away_targets else None,
         )
 
         _LOGGER.debug(
