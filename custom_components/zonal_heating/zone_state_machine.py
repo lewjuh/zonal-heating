@@ -136,6 +136,28 @@ class ZoneStateMachine:
             )
         )
 
+        # Track external temperature sensors - these affect needs_heat but
+        # don't cause TRV state changes, so the zone must listen directly
+        extra_entities = []
+        for room in self.rooms:
+            if room.temp_sensor:
+                extra_entities.append(room.temp_sensor)
+            extra_entities.extend(room.window_sensors)
+
+        if extra_entities:
+            self._remove_listeners.append(
+                async_track_state_change_event(
+                    self.hass,
+                    extra_entities,
+                    self._async_room_sensor_changed,
+                )
+            )
+            _LOGGER.info(
+                "%s: Tracking %d external sensors/window sensors for zone evaluation",
+                self.zone_name,
+                len(extra_entities),
+            )
+
         # Track person entities if configured
         if self.person_entities:
             self._remove_listeners.append(
@@ -213,7 +235,24 @@ class ZoneStateMachine:
 
         self._eval_debounce_timer = self.hass.loop.call_later(
             1.0,
-            lambda: self.hass.async_create_task(self._async_evaluate_zone()),
+            lambda: self.hass.async_create_task(self._async_debounced_evaluate()),
+        )
+
+    @callback
+    def _async_room_sensor_changed(self, event: Event) -> None:
+        """Handle external sensor/window changes that affect room needs_heat.
+
+        These sensors update the room state machines directly, but the zone
+        must re-evaluate since TRV entities won't fire a state change for this.
+        """
+        if self._eval_debounce_timer:
+            self._eval_debounce_timer.cancel()
+
+        self._eval_debounce_timer = self.hass.loop.call_later(
+            2.0,
+            lambda: self.hass.async_create_task(
+                self._async_debounced_evaluate()
+            ),
         )
 
     @callback
@@ -261,20 +300,33 @@ class ZoneStateMachine:
 
     async def _async_periodic_check(self) -> None:
         """Perform periodic safety check to ensure state consistency."""
-        _LOGGER.debug(
-            "%s: Running periodic safety check",
-            self.zone_name,
-        )
+        try:
+            _LOGGER.debug(
+                "%s: Running periodic safety check",
+                self.zone_name,
+            )
 
-        # Re-read all room states to ensure they're current
-        for room in self.rooms:
-            await room._async_update_climate_state()
+            # Re-read all room states to ensure they're current
+            for room in self.rooms:
+                try:
+                    await room._async_update_climate_state()
+                except Exception:
+                    _LOGGER.exception(
+                        "%s: Error updating room %s during periodic check",
+                        self.zone_name,
+                        room.room_name,
+                    )
 
-        # Evaluate zone state
-        await self._async_evaluate_zone()
-
-        # Schedule next check
-        self._schedule_periodic_check()
+            # Evaluate zone state
+            await self._async_evaluate_zone()
+        except Exception:
+            _LOGGER.exception(
+                "%s: Error during periodic safety check",
+                self.zone_name,
+            )
+        finally:
+            # Always reschedule - the periodic check must never permanently die
+            self._schedule_periodic_check()
 
     async def _async_update_zone_climate_state(self) -> None:
         """Update zone climate state from entity."""
@@ -295,7 +347,7 @@ class ZoneStateMachine:
                 "ON" if self._zone_is_on else "OFF",
             )
             self._last_zone_change = dt_util.now()
-            self.hass.async_create_task(self._async_evaluate_zone())
+            self.hass.async_create_task(self._async_debounced_evaluate())
 
     def _update_person_states(self) -> None:
         """Update person states and away mode."""
@@ -364,6 +416,16 @@ class ZoneStateMachine:
         )
 
         await self._async_evaluate_zone()
+
+    async def _async_debounced_evaluate(self) -> None:
+        """Safe wrapper for debounced zone evaluation."""
+        try:
+            await self._async_evaluate_zone()
+        except Exception:
+            _LOGGER.exception(
+                "%s: Error during zone evaluation (will retry on next trigger)",
+                self.zone_name,
+            )
 
     async def _async_evaluate_zone(self) -> None:
         """Evaluate zone state based on room states (with concurrency guard)."""
@@ -593,7 +655,7 @@ class ZoneStateMachine:
             )
             self._retry_timer = self.hass.loop.call_later(
                 time_remaining_seconds,
-                lambda: self.hass.async_create_task(self._async_evaluate_zone()),
+                lambda: self.hass.async_create_task(self._async_debounced_evaluate()),
             )
 
             return True
