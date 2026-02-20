@@ -19,7 +19,7 @@ from .const import CONF_ROOMS, CONF_ZONES, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-UPDATE_INTERVAL = 10  # seconds
+UPDATE_INTERVAL = 30  # seconds
 
 
 async def async_setup_entry(
@@ -139,11 +139,11 @@ class ZoneDiagnosticSensor(SensorEntity):
             return
 
         # Determine primary state
-        if coordinator.away_mode and not coordinator._away_mode_timer:
+        if coordinator.away_mode and not coordinator.away_mode_timer_active:
             self._attr_native_value = "away_mode"
-        elif coordinator._away_mode_pending:
+        elif coordinator.away_mode_pending:
             self._attr_native_value = "away_pending"
-        elif coordinator._zone_is_on:
+        elif coordinator.zone_is_on:
             self._attr_native_value = "heating"
         else:
             self._attr_native_value = "idle"
@@ -165,8 +165,8 @@ class ZoneDiagnosticSensor(SensorEntity):
         time_until_cycle_allowed = None
         cycle_time_blocking = False
 
-        if coordinator._last_zone_change:
-            elapsed = (dt_util.now() - coordinator._last_zone_change).total_seconds() / 60
+        if coordinator.last_zone_change:
+            elapsed = (dt_util.now() - coordinator.last_zone_change).total_seconds() / 60
             time_since_change = round(elapsed, 1)
 
             if elapsed < coordinator.min_cycle_time:
@@ -185,13 +185,13 @@ class ZoneDiagnosticSensor(SensorEntity):
             room_info = {
                 "name": room.room_name,
                 "needs_heat": room.needs_heat,
-                "current_temp": room._current_temp,
-                "target_temp": room._target_temp,
+                "current_temp": room.current_temperature,
+                "target_temp": room.target_temperature,
                 "deficit": round(room.temperature_deficit, 2) if room.temperature_deficit else 0,
-                "is_on": room._is_on,
-                "window_open": room._window_open,
-                "window_confirmed": room._window_open_confirmed,
-                "overheated": room._overheated,
+                "is_on": room.is_on,
+                "window_open": room.window_open,
+                "window_confirmed": room.window_open_confirmed,
+                "overheated": room.overheated,
                 "schedule_enabled": scheduler.schedule_enabled if scheduler else False,
             }
 
@@ -204,25 +204,25 @@ class ZoneDiagnosticSensor(SensorEntity):
         reason = self._build_reason(coordinator, rooms_needing_heat, cycle_time_blocking)
 
         # Check if in startup grace period
-        in_startup_grace = coordinator._is_in_startup_grace_period() if hasattr(coordinator, '_is_in_startup_grace_period') else False
+        in_startup_grace = coordinator.in_startup_grace_period
 
         attrs = {
             "zone_climate": coordinator.zone_climate,
-            "zone_is_on": coordinator._zone_is_on,
-            "zone_current_temp": coordinator._zone_current_temp,
+            "zone_is_on": coordinator.zone_is_on,
+            "zone_current_temp": coordinator.zone_current_temp,
             "min_cycle_time_minutes": coordinator.min_cycle_time,
             "time_since_last_change_minutes": time_since_change,
             "time_until_cycle_allowed_minutes": time_until_cycle_allowed,
             "cycle_time_blocking": cycle_time_blocking and not in_startup_grace,
             "startup_grace_period": in_startup_grace,
-            "retry_timer_active": coordinator._retry_timer is not None,
+            "retry_timer_active": coordinator.retry_timer_active,
             "rooms_total": len(coordinator.rooms),
             "rooms_needing_heat_count": len(rooms_needing_heat),
             "rooms_needing_heat": [r["name"] for r in rooms_needing_heat],
-            "away_mode": coordinator._away_mode,
-            "away_mode_pending": coordinator._away_mode_pending,
+            "away_mode": coordinator.away_mode,
+            "away_mode_pending": coordinator.away_mode_pending,
             "away_mode_delay": coordinator.away_mode_delay,
-            "people_home": coordinator._people_home_count,
+            "people_home": coordinator.people_home_count,
             "people_tracked": len(coordinator.person_entities),
             "reason": reason,
             "detailed_rooms": rooms_needing_heat + rooms_not_needing_heat,
@@ -232,16 +232,16 @@ class ZoneDiagnosticSensor(SensorEntity):
 
     def _build_reason(self, coordinator, rooms_needing_heat: list, cycle_blocking: bool) -> str:
         """Build a human-readable reason for current state."""
-        if coordinator._away_mode and not coordinator._away_mode_timer:
+        if coordinator.away_mode and not coordinator.away_mode_timer_active:
             return "Away mode active - all people away"
 
-        if coordinator._away_mode_pending:
+        if coordinator.away_mode_pending:
             return f"Away mode pending - waiting {coordinator.away_mode_delay} minute delay"
 
         if not rooms_needing_heat:
             return "No rooms need heat - all at or above target temperature"
 
-        if coordinator._zone_is_on:
+        if coordinator.zone_is_on:
             room_names = [r["name"] for r in rooms_needing_heat]
             return f"Heating active - {len(rooms_needing_heat)} room(s) need heat: {', '.join(room_names)}"
 
@@ -336,13 +336,13 @@ class RoomDiagnosticSensor(SensorEntity):
             return
 
         # Determine primary state
-        if room._overheated:
+        if room.overheated:
             self._attr_native_value = "overheated"
-        elif room._window_open_confirmed:
+        elif room.window_open_confirmed:
             self._attr_native_value = "window_open"
         elif room.needs_heat:
             self._attr_native_value = "needs_heat"
-        elif not room._is_on:
+        elif not room.is_on:
             self._attr_native_value = "off"
         else:
             self._attr_native_value = "satisfied"
@@ -366,47 +366,47 @@ class RoomDiagnosticSensor(SensorEntity):
             "climate_entity": room.climate_entity,
             "temp_sensor": room.temp_sensor,
             "using_external_sensor": room.temp_sensor is not None,
-            "current_temp": room._current_temp,
-            "target_temp": room._target_temp,
+            "current_temp": room.current_temperature,
+            "target_temp": room.target_temperature,
             "temp_differential": room.temp_differential,
             "overheat_threshold": room.overheat_threshold,
             "temperature_deficit": round(room.temperature_deficit, 2) if room.temperature_deficit else 0,
             "needs_heat": room.needs_heat,
-            "is_on": room._is_on,
-            "window_open": room._window_open,
-            "window_open_confirmed": room._window_open_confirmed,
-            "window_timer_active": room._window_timer is not None,
-            "overheated": room._overheated,
+            "is_on": room.is_on,
+            "window_open": room.window_open,
+            "window_open_confirmed": room.window_open_confirmed,
+            "window_timer_active": room.window_timer_active,
+            "overheated": room.overheated,
             "reason": reason,
         }
 
         # Add overheat limit calculation
-        if room._target_temp is not None:
-            attrs["overheat_limit"] = round(room._target_temp + room.overheat_threshold, 1)
-            attrs["heat_threshold"] = round(room._target_temp - room.temp_differential, 1)
+        if room.target_temperature is not None:
+            attrs["overheat_limit"] = round(room.target_temperature + room.overheat_threshold, 1)
+            attrs["heat_threshold"] = round(room.target_temperature - room.temp_differential, 1)
 
         return attrs
 
     def _build_reason(self, room) -> str:
         """Build a human-readable reason for current state."""
-        if not room._is_on:
+        if not room.is_on:
             return "Climate entity is OFF"
 
-        if room._overheated:
-            overheat_limit = room._target_temp + room.overheat_threshold
-            return f"Overheated - current {room._current_temp:.1f}C >= limit {overheat_limit:.1f}C"
+        if room.overheated:
+            overheat_limit = room.target_temperature + room.overheat_threshold
+            return f"Overheated - current {room.current_temperature:.1f}C >= limit {overheat_limit:.1f}C"
 
-        if room._window_open_confirmed:
+        if room.window_open_confirmed:
             return "Window confirmed open - heating paused"
 
-        if room._window_open:
+        if room.window_open:
             return f"Window detected open - waiting {room.window_delay}s delay to confirm"
 
-        if room._current_temp is None or room._target_temp is None:
+        if room.current_temperature is None or room.target_temperature is None:
             return "Missing temperature data"
 
-        threshold = room._target_temp - room.temp_differential
-        if room._current_temp < threshold:
-            return f"Needs heat - current {room._current_temp:.1f}C < threshold {threshold:.1f}C"
+        threshold = room.target_temperature - room.temp_differential
+        if room.current_temperature < threshold:
+            return f"Needs heat - current {room.current_temperature:.1f}C < threshold {threshold:.1f}C"
 
-        return f"Satisfied - current {room._current_temp:.1f}C >= threshold {threshold:.1f}C"
+        return f"Satisfied - current {room.current_temperature:.1f}C >= threshold {threshold:.1f}C"

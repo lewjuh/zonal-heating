@@ -309,7 +309,7 @@ class ZoneStateMachine:
             # Re-read all room states to ensure they're current
             for room in self.rooms:
                 try:
-                    await room._async_update_climate_state()
+                    await room.async_update_climate_state()
                 except Exception:
                     _LOGGER.exception(
                         "%s: Error updating room %s during periodic check",
@@ -374,6 +374,41 @@ class ZoneStateMachine:
     def people_home_count(self) -> int:
         """Return number of people currently home."""
         return self._people_home_count
+
+    @property
+    def zone_is_on(self) -> bool:
+        """Return True if zone thermostat is on."""
+        return self._zone_is_on
+
+    @property
+    def zone_current_temp(self) -> float | None:
+        """Return zone thermostat current temperature."""
+        return self._zone_current_temp
+
+    @property
+    def last_zone_change(self):
+        """Return time of last zone state change."""
+        return self._last_zone_change
+
+    @property
+    def retry_timer_active(self) -> bool:
+        """Return True if retry timer is active."""
+        return self._retry_timer is not None
+
+    @property
+    def away_mode_pending(self) -> bool:
+        """Return True if away mode is pending activation."""
+        return self._away_mode_pending
+
+    @property
+    def away_mode_timer_active(self) -> bool:
+        """Return True if away mode delay timer is running."""
+        return self._away_mode_timer is not None
+
+    @property
+    def in_startup_grace_period(self) -> bool:
+        """Return True if in startup grace period."""
+        return self._is_in_startup_grace_period()
 
     def _start_away_mode_delay_timer(self, delay_seconds: float | None = None) -> None:
         """Start delay timer before activating away mode."""
@@ -534,15 +569,22 @@ class ZoneStateMachine:
                 self.away_temperature,
             )
 
-            await self.hass.services.async_call(
-                CLIMATE_DOMAIN,
-                SERVICE_SET_TEMPERATURE,
-                {
-                    ATTR_ENTITY_ID: room.climate_entity,
-                    ATTR_TEMPERATURE: self.away_temperature,
-                },
-                blocking=False,
-            )
+            try:
+                await self.hass.services.async_call(
+                    CLIMATE_DOMAIN,
+                    SERVICE_SET_TEMPERATURE,
+                    {
+                        ATTR_ENTITY_ID: room.climate_entity,
+                        ATTR_TEMPERATURE: self.away_temperature,
+                    },
+                    blocking=True,
+                )
+            except Exception:
+                _LOGGER.exception(
+                    "%s: Failed to set away temperature for %s",
+                    self.zone_name,
+                    room.room_name,
+                )
 
         # Turn off zone thermostat
         zone_state = self.hass.states.get(self.zone_climate)
@@ -585,15 +627,22 @@ class ZoneStateMachine:
                         room.room_name,
                         saved_target,
                     )
-                    await self.hass.services.async_call(
-                        CLIMATE_DOMAIN,
-                        SERVICE_SET_TEMPERATURE,
-                        {
-                            ATTR_ENTITY_ID: room.climate_entity,
-                            ATTR_TEMPERATURE: saved_target,
-                        },
-                        blocking=False,
-                    )
+                    try:
+                        await self.hass.services.async_call(
+                            CLIMATE_DOMAIN,
+                            SERVICE_SET_TEMPERATURE,
+                            {
+                                ATTR_ENTITY_ID: room.climate_entity,
+                                ATTR_TEMPERATURE: saved_target,
+                            },
+                            blocking=True,
+                        )
+                    except Exception:
+                        _LOGGER.exception(
+                            "%s: Failed to restore temperature for %s",
+                            self.zone_name,
+                            room.room_name,
+                        )
             self._pre_away_targets.clear()
 
         await self._async_evaluate_zone()

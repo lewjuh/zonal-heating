@@ -151,7 +151,7 @@ class RoomScheduler:
 
     async def _async_apply_scheduled_temperature(self, temperature: float) -> None:
         """Apply a scheduled temperature, or queue it if conditions block."""
-        if self._room_sm._window_open_confirmed or self._room_sm._overheated:
+        if self._room_sm.window_open_confirmed or self._room_sm.overheated:
             self._queued_temperature = temperature
             _LOGGER.info(
                 "%s: Scheduled temp %.1fC queued - waiting for condition to clear",
@@ -160,7 +160,7 @@ class RoomScheduler:
             )
             return
 
-        await self._room_sm._async_set_trv_target_temp(temperature)
+        await self._room_sm.async_set_trv_target_temp(temperature)
         self._last_scheduled_temp = temperature
         _LOGGER.info(
             "%s: Applied scheduled temperature: %.1fC",
@@ -173,13 +173,13 @@ class RoomScheduler:
         if self._queued_temperature is None:
             return
 
-        if self._room_sm._window_open_confirmed or self._room_sm._overheated:
+        if self._room_sm.window_open_confirmed or self._room_sm.overheated:
             return
 
         temp = self._queued_temperature
         self._queued_temperature = None
 
-        await self._room_sm._async_set_trv_target_temp(temp)
+        await self._room_sm.async_set_trv_target_temp(temp)
         self._last_scheduled_temp = temp
         _LOGGER.info(
             "%s: Applied queued scheduled temperature: %.1fC",

@@ -115,6 +115,18 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    def _get_existing_room_names(self, exclude_name: str | None = None) -> set[str]:
+        """Collect all room names across all zones and current rooms."""
+        names: set[str] = set()
+        for zone in self._zones:
+            for room in zone.get(CONF_ROOMS, []):
+                names.add(room.get(CONF_NAME, ""))
+        for room in self._current_rooms:
+            names.add(room.get(CONF_NAME, ""))
+        if exclude_name:
+            names.discard(exclude_name)
+        return names
+
     async def async_step_add_room(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -123,6 +135,7 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             trv_entity = user_input[CONF_TRV_ENTITY]
+            room_name = user_input[CONF_NAME]
 
             # Validate TRV entity exists
             if not self.hass.states.get(trv_entity):
@@ -130,6 +143,9 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Check if TRV already used in current zone
             elif trv_entity in [r[CONF_TRV_ENTITY] for r in self._current_rooms]:
                 errors["base"] = "duplicate_trv"
+            # Check room name uniqueness across all zones
+            elif room_name in self._get_existing_room_names():
+                errors["base"] = "duplicate_room_name"
             else:
                 # Add room to current zone
                 room = {
@@ -488,6 +504,29 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             trv_entity = user_input[CONF_TRV_ENTITY]
+            room_name = user_input[CONF_NAME]
+
+            # Get current room name if editing (to exclude from uniqueness check)
+            current_name = None
+            if self._reconfigure_room_index is not None:
+                current_name = self._current_rooms[self._reconfigure_room_index].get(CONF_NAME)
+
+            # Collect room names from other zones
+            other_zone_names: set[str] = set()
+            for idx, zone in enumerate(self._zones):
+                if idx == self._reconfigure_zone_index:
+                    continue
+                for room in zone.get(CONF_ROOMS, []):
+                    other_zone_names.add(room.get(CONF_NAME, ""))
+
+            # Collect room names from current zone (excluding the room being edited)
+            current_zone_names = {
+                r.get(CONF_NAME, "")
+                for i, r in enumerate(self._current_rooms)
+                if i != self._reconfigure_room_index
+            }
+
+            all_existing_names = other_zone_names | current_zone_names
 
             # Validate TRV entity exists
             if not self.hass.states.get(trv_entity):
@@ -498,6 +537,9 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 for idx, r in enumerate(self._current_rooms)
             ):
                 errors["base"] = "duplicate_trv"
+            # Check room name uniqueness across all zones
+            elif room_name in all_existing_names:
+                errors["base"] = "duplicate_room_name"
             else:
                 room = {
                     CONF_NAME: user_input[CONF_NAME],

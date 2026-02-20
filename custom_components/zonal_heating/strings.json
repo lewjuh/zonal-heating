@@ -129,6 +129,7 @@
             "duplicate_zone_thermostat": "This thermostat is already used in another zone",
             "invalid_trv": "Selected TRV entity does not exist or is not a climate entity",
             "duplicate_trv": "This TRV is already used in another room in this zone",
+            "duplicate_room_name": "This room name is already used in another zone. Room names must be unique across all zones.",
             "unknown": "[%key:common::config_flow::error::unknown%]"
         },
         "abort": {

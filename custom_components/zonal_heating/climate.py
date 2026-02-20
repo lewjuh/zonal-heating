@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -364,8 +363,8 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         )
 
         room_sm = self._get_room_state_machine()
-        if room_sm and room_sm._mqtt_control_available:
-            await room_sm._async_set_trv_target_temp(self._attr_target_temperature)
+        if room_sm and room_sm.mqtt_control_available:
+            await room_sm.async_set_trv_target_temp(self._attr_target_temperature)
             _LOGGER.debug(
                 "%s: Startup sync used room state machine MQTT control",
                 self._attr_name,
@@ -459,16 +458,16 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         if room_state_machine:
             attrs["sm_needs_heat"] = room_state_machine.needs_heat
             attrs["sm_temperature_deficit"] = round(room_state_machine.temperature_deficit, 2)
-            attrs["sm_window_confirmed"] = room_state_machine._window_open_confirmed
-            attrs["sm_overheated"] = room_state_machine._overheated
-            attrs["sm_is_on"] = room_state_machine._is_on
+            attrs["sm_window_confirmed"] = room_state_machine.window_open_confirmed
+            attrs["sm_overheated"] = room_state_machine.overheated
+            attrs["sm_is_on"] = room_state_machine.is_on
 
-            if room_state_machine._target_temp is not None:
+            if room_state_machine.target_temperature is not None:
                 attrs["heat_threshold"] = round(
-                    room_state_machine._target_temp - room_state_machine.temp_differential, 1
+                    room_state_machine.target_temperature - room_state_machine.temp_differential, 1
                 )
                 attrs["overheat_limit"] = round(
-                    room_state_machine._target_temp + room_state_machine.overheat_threshold, 1
+                    room_state_machine.target_temperature + room_state_machine.overheat_threshold, 1
                 )
 
         if zone_coordinator:
@@ -477,8 +476,8 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
                 attrs[ATTR_PEOPLE_HOME] = zone_coordinator.people_home_count
 
             attrs["zone_cycle_blocking"] = (
-                zone_coordinator._last_zone_change is not None
-                and zone_coordinator._retry_timer is not None
+                zone_coordinator.last_zone_change is not None
+                and zone_coordinator.retry_timer_active
             )
 
         scheduler = self._get_room_scheduler()
@@ -498,22 +497,22 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
 
     def _build_reason(self, zone_coordinator, room_sm) -> str:
         """Build detailed reason for current state."""
-        if zone_coordinator and zone_coordinator.away_mode and not zone_coordinator._away_mode_timer:
+        if zone_coordinator and zone_coordinator.away_mode and not zone_coordinator.away_mode_timer_active:
             return "Away mode active - low power"
 
-        if zone_coordinator and zone_coordinator._away_mode_pending:
+        if zone_coordinator and zone_coordinator.away_mode_pending:
             return f"Away mode pending ({zone_coordinator.away_mode_delay}min delay)"
 
         if room_sm:
-            if room_sm._overheated:
-                if room_sm._target_temp is not None:
-                    return f"Overheated - TRV turned off (temp >= {room_sm._target_temp + room_sm.overheat_threshold:.1f}C)"
+            if room_sm.overheated:
+                if room_sm.target_temperature is not None:
+                    return f"Overheated - TRV turned off (temp >= {room_sm.target_temperature + room_sm.overheat_threshold:.1f}C)"
                 return "Overheated - TRV turned off"
 
-            if room_sm._window_open_confirmed:
+            if room_sm.window_open_confirmed:
                 return "Window confirmed open - TRV turned off"
 
-            if room_sm._window_open and room_sm._window_timer:
+            if room_sm.window_open and room_sm.window_timer_active:
                 return f"Window detected - waiting {room_sm.window_delay}s to confirm"
 
         if self._attr_hvac_mode == HVACMode.OFF:
@@ -522,7 +521,7 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         if room_sm and room_sm.needs_heat:
             if self._zone_active:
                 return f"Heating - deficit {room_sm.temperature_deficit:.1f}C"
-            if zone_coordinator and zone_coordinator._retry_timer:
+            if zone_coordinator and zone_coordinator.retry_timer_active:
                 return "Needs heat but zone blocked by min_cycle_time"
             return "Needs heat - waiting for zone to activate"
 

@@ -6,6 +6,7 @@
             "reconfigure_successful": "Zone configuration updated successfully"
         },
         "error": {
+            "duplicate_room_name": "This room name is already used in another zone. Room names must be unique across all zones.",
             "duplicate_trv": "This TRV is already used in another room in this zone",
             "duplicate_zone_thermostat": "This thermostat is already used in another zone",
             "invalid_thermostat": "Selected zone thermostat does not exist or is not a climate entity",

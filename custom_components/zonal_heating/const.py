@@ -37,21 +37,14 @@ DEFAULT_PRIORITY = 5  # Default room priority (1-10 scale)
 DEFAULT_AWAY_TEMPERATURE = 16.0  # °C temperature when all away
 DEFAULT_AWAY_MODE_DELAY = 10  # Minutes to wait before activating away mode
 DEFAULT_OVERHEAT_THRESHOLD = 1.0  # °C above target to turn off TRV
-DEFAULT_SENSOR_STALE_THRESHOLD = 3.0  # °C difference to consider external sensor stale
 DEFAULT_CALIBRATION_SYNC = False  # Sync external temp to TRV via calibration offset
 FROST_PROTECTION_TEMP = 5.0  # °C - minimum temp when TRV needs to be "disabled"
-
-# Update intervals
-UPDATE_INTERVAL_ZONE_EVAL = 30  # Seconds between zone evaluations
-UPDATE_INTERVAL_TEMP_POLL = 60  # Seconds between temperature polling
 
 # Priority range
 PRIORITY_MIN = 1
 PRIORITY_MAX = 10
 
 # Service names
-SERVICE_SET_PRIORITY = "set_priority"
-SERVICE_GET_STATS = "get_stats"
 SERVICE_SET_ROOM_SCHEDULE = "set_room_schedule"
 SERVICE_GET_ROOM_SCHEDULE = "get_room_schedule"
 SERVICE_DELETE_ROOM_SCHEDULE = "delete_room_schedule"

@@ -24,6 +24,7 @@ from .const import FROST_PROTECTION_TEMP
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from datetime import datetime
 
     from .scheduler import RoomScheduler
     from .storage import ZonalHeatingStorage
@@ -164,7 +165,7 @@ class RoomStateMachine:
                 )
 
         # Initialize state
-        await self._async_update_climate_state()
+        await self.async_update_climate_state()
         self._update_window_state()
 
         # Start window timer if window is open and not already confirmed
@@ -192,7 +193,7 @@ class RoomStateMachine:
     @callback
     def _async_climate_changed(self, event: Event) -> None:
         """Handle climate entity state changes."""
-        self.hass.async_create_task(self._async_update_climate_state())
+        self.hass.async_create_task(self.async_update_climate_state())
 
     @callback
     def _async_temp_sensor_changed(self, event: Event) -> None:
@@ -205,7 +206,7 @@ class RoomStateMachine:
                 float(new_state.state) if new_state.state not in ("unavailable", "unknown") else 0,
             )
         self.hass.async_create_task(
-            self._async_update_climate_state(sync_calibration=True)
+            self.async_update_climate_state(sync_calibration=True)
         )
 
     @callback
@@ -890,7 +891,7 @@ class RoomStateMachine:
             )
 
         # Set to frost protection temp via MQTT or HA service
-        await self._async_set_trv_target_temp(FROST_PROTECTION_TEMP)
+        await self.async_set_trv_target_temp(FROST_PROTECTION_TEMP)
         _LOGGER.info(
             "%s: Set TRV to frost protection (%.1f°C)",
             self.room_name,
@@ -906,7 +907,7 @@ class RoomStateMachine:
             )
             return
 
-        await self._async_set_trv_target_temp(self._saved_target_temp)
+        await self.async_set_trv_target_temp(self._saved_target_temp)
         _LOGGER.info(
             "%s: Restored TRV target to %.1f°C",
             self.room_name,
@@ -914,7 +915,7 @@ class RoomStateMachine:
         )
         self._saved_target_temp = None
 
-    async def _async_set_trv_target_temp(self, temperature: float) -> None:
+    async def async_set_trv_target_temp(self, temperature: float) -> None:
         """Set TRV target temperature using best available method."""
         # Try MQTT first for more reliable control
         if self._mqtt_control_available and self._mqtt_friendly_name:
@@ -951,7 +952,7 @@ class RoomStateMachine:
             blocking=True,
         )
 
-    async def _async_update_climate_state(
+    async def async_update_climate_state(
         self, *, sync_calibration: bool = False
     ) -> None:
         """Update climate state from entity."""
@@ -1084,6 +1085,21 @@ class RoomStateMachine:
     def overheated(self) -> bool:
         """Return True if room is overheated."""
         return self._overheated
+
+    @property
+    def window_open_confirmed(self) -> bool:
+        """Return True if window open has been confirmed after delay."""
+        return self._window_open_confirmed
+
+    @property
+    def window_timer_active(self) -> bool:
+        """Return True if window delay timer is running."""
+        return self._window_timer is not None
+
+    @property
+    def mqtt_control_available(self) -> bool:
+        """Return True if MQTT control is available for this TRV."""
+        return self._mqtt_control_available
 
     async def _async_check_overheat(self, was_overheated: bool) -> None:
         """Check if room is overheating and set frost protection if needed."""
