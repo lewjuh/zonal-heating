@@ -155,6 +155,9 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         self._remove_listeners: list = []
         self._startup_sync_timer: asyncio.TimerHandle | None = None
 
+        # Track when we last pushed a target TO the TRV (suppresses sync-back)
+        self._target_set_at: float = 0
+
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info to group entities under a zone device."""
@@ -211,6 +214,9 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
                 self.hass, [self._zone_thermostat], self._async_zone_thermostat_changed
             )
         )
+
+        # Suppress TRV→virtual target sync until startup sync completes
+        self._target_set_at = self.hass.loop.time()
 
         # Initial update
         await self._async_update_state()
@@ -284,6 +290,21 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         current_temp = self._attr_current_temperature
         trv_target = trv_state.attributes.get("temperature")
         trv_hvac_mode = trv_state.state
+
+        # Sync displayed target from TRV so UI matches actual heating decisions.
+        # Suppressed briefly after user-initiated changes to avoid flicker.
+        if (
+            trv_target is not None
+            and self.hass.loop.time() - self._target_set_at > 5.0
+            and self._attr_target_temperature != trv_target
+        ):
+            _LOGGER.debug(
+                "%s: Syncing target from TRV: %.1f C -> %.1f C",
+                self._attr_name,
+                self._attr_target_temperature or 0,
+                trv_target,
+            )
+            self._attr_target_temperature = trv_target
 
         old_heat_requesting = self._heat_requesting
 
@@ -363,6 +384,7 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             trv_mode,
         )
 
+        self._target_set_at = self.hass.loop.time()
         try:
             room_sm = self._get_room_state_machine()
             if room_sm and room_sm.mqtt_control_available:
@@ -549,6 +571,7 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         if (temperature := kwargs.get(ATTR_TEMPERATURE)) is None:
             return
 
+        self._target_set_at = self.hass.loop.time()
         self._attr_target_temperature = temperature
         self.async_write_ha_state()
         _LOGGER.debug(
