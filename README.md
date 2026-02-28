@@ -4,31 +4,36 @@
 [![GitHub Release](https://img.shields.io/github/release/lewjuh/zonal-heating.svg?style=flat-square)](https://github.com/lewjuh/zonal-heating/releases)
 [![License](https://img.shields.io/github/license/lewjuh/zonal-heating.svg?style=flat-square)](LICENSE)
 
-A Home Assistant integration for intelligent multi-zone heating control with TRV (thermostatic radiator valve) management.
+A Home Assistant integration for multi-zone heating control with TRV (thermostatic radiator valve) coordination.
+
+## How It Works
+
+You set a temperature on a room. The room holds it. No schedules, no away mode, no system overriding your chosen temperature behind your back.
+
+The integration coordinates your zone thermostat (boiler) with individual room TRVs:
+
+1. You set a target temperature on a room via the virtual climate entity
+2. The integration forwards it to the physical TRV
+3. The room state machine monitors whether the room needs heat (current temp below target minus differential)
+4. The zone state machine watches all rooms -- if any room needs heat, it turns on the zone thermostat
+5. When all rooms are satisfied, the zone thermostat turns off
+
+That's it. Four temperature write points, one clear control flow.
 
 ## Features
 
-- **Multi-Zone Support**: Organize your home into heating zones, each controlled by a zone thermostat
-- **Room-Level Control**: Individual TRV control for each room with priority-based heating
-- **Window Detection**: Automatic heating pause when windows are open
-- **Smart Cycling**: Prevents rapid on/off cycling with configurable minimum cycle times
-- **Temperature Differential**: Fine-tune when heating activates based on temperature drop
-- **Priority Heating**: Set heating priorities (1-10) for each room
-- **Easy Configuration**: Fully configurable through the UI with step-by-step setup
-- **Reconfiguration Support**: Edit zones, rooms, and settings without starting over
-- **Overheat Protection**: Automatically turns off TRVs when rooms exceed target temperature
-- **Away Mode**: Presence-based heating with configurable delay
-- **Diagnostic Sensors**: Detailed sensors for debugging and monitoring
-- **Custom Dashboard Card**: Built-in Lovelace card for visual heating status
-
-## What is Zonal Heating?
-
-Zonal heating divides your home into zones (e.g., ground floor, upstairs), each with:
-- A **zone thermostat** that controls the heating system for that zone
-- Multiple **rooms** with individual TRVs that open/close radiators
-- Optional **window sensors** that pause heating when windows are open
-
-This integration coordinates the zone thermostat and room TRVs to ensure efficient, comfortable heating while preventing wasted energy.
+- **Multi-Zone Support** -- organise your home into heating zones, each controlled by a zone thermostat
+- **Room-Level Control** -- individual TRV management for each room
+- **Window Detection** -- heating demand suppressed when windows are open (with configurable delay to avoid false triggers)
+- **Smart Cycling** -- prevents rapid boiler on/off with configurable minimum cycle time
+- **Temperature Differential** -- fine-tune when heating activates based on temperature drop below target
+- **External Temperature Sensors** -- use a separate sensor for more accurate room readings
+- **Calibration Sync** -- sync external sensor readings to TRV via calibration offset or direct input
+- **MQTT Direct Control** -- automatic Zigbee2MQTT detection for more reliable TRV communication
+- **Diagnostic Sensors** -- detailed sensors for monitoring and debugging
+- **Custom Dashboard Card** -- built-in Lovelace card for visual heating status
+- **UI Configuration** -- fully configurable through the Home Assistant UI with step-by-step setup
+- **Reconfiguration** -- edit zones, rooms, and settings without starting over
 
 ## Installation
 
@@ -50,54 +55,75 @@ This integration coordinates the zone thermostat and room TRVs to ensure efficie
 
 ## Configuration
 
-1. Go to **Settings** → **Devices & Services**
+1. Go to **Settings** > **Devices & Services**
 2. Click **+ Add Integration**
 3. Search for "Zonal Heating"
 4. Follow the configuration flow:
 
 ### Step 1: Add Zones
+
 - Give your zone a name (e.g., "Ground Floor", "Upstairs")
 - Select the main thermostat that controls heating for this zone
 
 ### Step 2: Add Rooms to Zone
+
 For each room in the zone:
 - Enter the room name (e.g., "Living Room", "Bedroom")
 - Select the TRV climate entity for that room
+- (Optional) Select an external temperature sensor for more accurate readings
 - (Optional) Select window/door sensors
-- Set the heating priority (1-10, where 10 is highest)
+- Set the heating priority (1-10)
 
 ### Step 3: Global Settings
-Configure global heating parameters:
-- **Temperature Differential**: How far below target before requesting heat (default: 0.5°C)
-- **Minimum Cycle Time**: Minimum time between zone thermostat changes (default: 5 minutes)
-- **Window Open Delay**: Wait time before pausing heating when window opens (default: 30 seconds)
-- **Overheat Threshold**: Degrees above target to trigger TRV shutoff (default: 1.0°C)
-- **Away Temperature**: Target temperature when all tracked people are away (default: 16°C)
-- **Away Mode Delay**: Minutes to wait before activating away mode (default: 10 minutes)
-- **Person Entities**: Select person entities to track for away mode
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Temperature Differential | 0.25°C | How far below target before requesting heat |
+| Minimum Cycle Time | 5 minutes | Minimum time between zone thermostat on/off changes |
+| Window Open Delay | 30 seconds | Wait time before suppressing heat when window opens |
+| Calibration Sync | Off | Sync external sensor temperature to TRV calibration |
 
 ### Step 4: Add More Zones (Optional)
+
 Repeat for additional zones in your home.
 
-## How It Works
+## Zone and Room Behaviour
 
-### Zone Control
-Each zone monitors all its rooms and:
-- Requests heating when any high-priority room needs it
-- Prevents rapid cycling with minimum cycle time
-- Coordinates with the zone thermostat to turn heating on/off
+### Zone State Machine
 
-### Room Control
+The zone monitors all its rooms and:
+- Turns the zone thermostat **on** when any room needs heat
+- Turns the zone thermostat **off** when no rooms need heat
+- Prevents rapid cycling with a minimum cycle time between state changes
+- Automatically retries when blocked by the cycle timer
+- Sets the zone thermostat target to current + 5°C when turning on (ensures the boiler fires)
+
+### Room State Machine
+
 Each room:
-- Opens its TRV when temperature is below target (considering differential)
-- Closes TRV when at/above target temperature
-- Pauses heating when windows are detected open
-- Respects priority settings for coordinated heating
+- Reports `needs_heat` when current temperature is below target minus differential, the climate entity is on, and the window is not confirmed open
+- Monitors the TRV entity for temperature and state changes
+- Uses an external temperature sensor if configured (overrides the TRV's built-in sensor)
+- Handles window detection with a configurable delay to prevent false triggers from brief openings
+- Stops requesting heat when the TRV goes unavailable (prevents running the boiler on stale data)
 
-### Priority System
-- Rooms with priority 8-10: High priority - will trigger zone heating
-- Rooms with priority 4-7: Medium priority - will open TRV when zone is heating
-- Rooms with priority 1-3: Low priority - will open TRV when zone is heating
+### Window Detection
+
+When a window sensor triggers:
+1. The room notes the window is open but continues requesting heat during the delay period
+2. After the configured delay (default 30s), if the window is still open, the room confirms it and suppresses heat requests
+3. The zone re-evaluates immediately and may turn off if no other rooms need heat
+4. When the window closes, the room resumes heat requests and the zone re-evaluates
+
+The TRV target temperature is never changed by window detection -- it only suppresses the room's demand signal to the zone.
+
+### Calibration Sync
+
+When enabled with an external temperature sensor, the integration syncs the external reading to the TRV so it uses the more accurate measurement. It tries these methods in order:
+
+1. **Direct external temp input** -- sets the external sensor number entity on the TRV (e.g., Sonoff TRVZB)
+2. **Calibration offset** -- calculates and sets a local temperature calibration offset
+3. **MQTT direct** -- publishes the calibration offset directly via Zigbee2MQTT MQTT
 
 ## Reconfiguration
 
@@ -108,11 +134,11 @@ You can edit your configuration at any time:
 3. Choose what to edit:
    - Add/edit/delete zones
    - Add/edit/delete rooms
-   - Update global settings
+4. To update global settings, click the three-dot menu and select **Configure** on the options flow
 
 ## Dashboard Card
 
-The integration includes a custom Lovelace card that provides a visual overview of your heating system.
+The integration includes a custom Lovelace card for visual heating status.
 
 ### Adding the Card
 
@@ -129,8 +155,6 @@ title: Ground Floor Heating
 show_debug: false
 ```
 
-### Card Configuration Options
-
 | Option | Required | Default | Description |
 |--------|----------|---------|-------------|
 | `zone_sensor` | Yes | - | The zone diagnostic sensor entity |
@@ -139,99 +163,94 @@ show_debug: false
 
 ### Card Features
 
-- **Zone Status**: Shows heating/idle/away status with colour coding
-- **Room List**: All rooms with current and target temperatures
-- **Status Reasons**: Clear explanations for why each room is in its current state
-- **Debug Toggle**: Click "Debug" to see detailed diagnostic information
-- **People Tracking**: Shows how many tracked people are home (if configured)
+- **Zone Status** -- shows heating/idle status with colour coding
+- **Room List** -- all rooms with current and target temperatures
+- **Status Reasons** -- clear explanations for why each room is in its current state
+- **Debug Toggle** -- click to see detailed diagnostic information
 
-### Registering the Card Resource
-
-The integration automatically registers the card. If you need to add it manually:
-
-1. Go to **Settings** → **Dashboards** → three-dot menu → **Resources**
-2. Add resource: `/zonal_heating/zonal-heating-card.js`
-3. Set type to "JavaScript Module"
+The integration automatically registers the card resource. If you need to add it manually, go to **Settings** > **Dashboards** > three-dot menu > **Resources** and add `/zonal_heating/zonal-heating-card.js` as a JavaScript Module.
 
 ## Diagnostic Sensors
 
-The integration creates diagnostic sensors for monitoring and debugging.
-
 ### Zone Sensor
 
-For each zone, a sensor is created: `sensor.zonal_heating_<zone_name>_status`
+Entity: `sensor.zonal_heating_<zone_name>_status`
 
 **States:**
-- `heating` - Zone is actively heating
-- `idle` - All rooms satisfied, heating not needed
-- `away_mode` - Away mode active, reduced heating
-- `away_pending` - Away mode will activate after delay
+- `heating` -- zone thermostat is on, at least one room needs heat
+- `idle` -- all rooms satisfied, zone thermostat off
 
-**Attributes:**
-- `zone_is_on` - Whether zone thermostat is on
-- `rooms_needing_heat_count` - Number of rooms requesting heat
-- `rooms_needing_heat` - List of room names needing heat
-- `cycle_time_blocking` - Whether min cycle time is preventing changes
-- `time_until_cycle_allowed_minutes` - Time remaining until changes allowed
-- `away_mode` - Away mode status
-- `people_home` - Number of tracked people at home
-- `detailed_rooms` - Full details of all rooms
+**Key attributes:**
+- `zone_is_on` -- whether the zone thermostat is currently on
+- `rooms_needing_heat_count` -- number of rooms requesting heat
+- `rooms_needing_heat` -- list of room names needing heat
+- `cycle_time_blocking` -- whether min cycle time is preventing a state change
+- `time_until_cycle_allowed_minutes` -- time remaining until changes are allowed
+- `reason` -- human-readable explanation of current state
+- `detailed_rooms` -- full details of all rooms including temperatures and deficits
 
 ### Room Sensor
 
-For each room, a sensor is created: `sensor.zonal_heating_<room_name>_status`
+Entity: `sensor.zonal_heating_<room_name>_status`
 
 **States:**
-- `needs_heat` - Room needs heating
-- `satisfied` - Temperature at or above target
-- `window_open` - Window detected open
-- `overheated` - Room above overheat threshold
-- `off` - Climate entity is off
+- `needs_heat` -- room temperature is below heating threshold
+- `satisfied` -- temperature at or above threshold
+- `window_open` -- window confirmed open, heat requests suppressed
+- `off` -- climate entity is off
 
-**Attributes:**
-- `current_temp` - Current room temperature
-- `target_temp` - Target temperature
-- `temperature_deficit` - Degrees below heating threshold
-- `heat_threshold` - Temperature below which heating activates
-- `overheat_limit` - Temperature above which TRV shuts off
-- `reason` - Human-readable explanation of current state
+**Key attributes:**
+- `current_temp` -- current room temperature
+- `target_temp` -- target temperature
+- `temp_differential` -- configured differential
+- `temperature_deficit` -- degrees below target
+- `heat_threshold` -- temperature below which heating activates
+- `reason` -- human-readable explanation of current state
 
-## Example Configuration
+## Example Setup
 
 **Zone: Ground Floor**
 - Zone Thermostat: `climate.boiler_ground_floor`
 - Rooms:
-  - Living Room (TRV: `climate.living_room_trv`, Priority: 10, Windows: `binary_sensor.living_room_window`)
-  - Kitchen (TRV: `climate.kitchen_trv`, Priority: 8)
-  - Hallway (TRV: `climate.hallway_trv`, Priority: 5)
+  - Living Room (TRV: `climate.living_room_trv`, Sensor: `sensor.living_room_temp`, Windows: `binary_sensor.living_room_window`)
+  - Kitchen (TRV: `climate.kitchen_trv`)
+  - Hallway (TRV: `climate.hallway_trv`)
 
 **Zone: First Floor**
 - Zone Thermostat: `climate.boiler_first_floor`
 - Rooms:
-  - Main Bedroom (TRV: `climate.main_bedroom_trv`, Priority: 10, Windows: `binary_sensor.bedroom_window`)
-  - Bedroom 2 (TRV: `climate.bedroom_2_trv`, Priority: 7)
-  - Bathroom (TRV: `climate.bathroom_trv`, Priority: 3)
+  - Main Bedroom (TRV: `climate.main_bedroom_trv`, Sensor: `sensor.bedroom_temp`, Windows: `binary_sensor.bedroom_window`)
+  - Bedroom 2 (TRV: `climate.bedroom_2_trv`)
+  - Bathroom (TRV: `climate.bathroom_trv`)
 
 ## Requirements
 
 - Home Assistant 2024.1.0 or newer
 - Climate entities for zone thermostats
 - Climate entities for TRVs
+- (Optional) Temperature sensor entities for more accurate room readings
 - (Optional) Binary sensor entities for windows/doors
 
 ## Troubleshooting
 
 ### Heating not activating
-- Check that high-priority rooms (8-10) have temperature below target
-- Verify zone thermostat entity is correct
-- Check minimum cycle time hasn't prevented activation
+- Check diagnostic sensors -- look at the `reason` attribute for an explanation
+- Verify at least one room reports `needs_heat`
+- Check if minimum cycle time is blocking (`cycle_time_blocking` attribute)
+- Ensure the zone thermostat entity is correct and available
 
-### TRV not opening
-- Verify TRV entity is correct and available
-- Check if window sensor is triggering pause
-- Ensure room temperature is below target minus differential
+### TRV not responding
+- Check the TRV entity is available in Home Assistant
+- If using Zigbee2MQTT, the integration should auto-detect and use direct MQTT control
+- Check logs for "Failed to set TRV target temperature" messages
+
+### Window detection not working
+- Check that the window sensor reports `on` when open
+- The delay (default 30s) means heating won't stop immediately -- this is intentional to avoid false triggers
+- Check the room diagnostic sensor's `window_open` and `window_open_confirmed` attributes
 
 ### Enable debug logging
+
 Add to your `configuration.yaml`:
 ```yaml
 logger:
@@ -239,6 +258,12 @@ logger:
   logs:
     custom_components.zonal_heating: debug
 ```
+
+Key log messages to search for:
+- `ZONE EVALUATION` -- zone decision points
+- `MIN CYCLE TIME` -- cycling protection
+- `Window opened` / `Window open confirmed` -- window detection
+- `Heating need changed` -- room heat demand changes
 
 ## Support
 
