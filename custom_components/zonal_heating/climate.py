@@ -280,9 +280,7 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
                 except (ValueError, TypeError):
                     pass
 
-        current_temp = self._attr_current_temperature
         trv_target = trv_state.attributes.get("temperature")
-        trv_hvac_mode = trv_state.state
 
         # Sync displayed target from TRV so UI matches actual heating decisions.
         # Suppressed briefly after user-initiated changes to avoid flicker.
@@ -299,24 +297,16 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             )
             self._attr_target_temperature = trv_target
 
+        # Use room SM as single source of truth for heat requesting
         old_heat_requesting = self._heat_requesting
-
-        self._heat_requesting = (
-            trv_hvac_mode == HVACMode.HEAT
-            and current_temp is not None
-            and trv_target is not None
-            and current_temp < trv_target
-        )
+        room_sm = self._get_room_state_machine()
+        self._heat_requesting = room_sm.needs_heat if room_sm else False
 
         if old_heat_requesting != self._heat_requesting:
             _LOGGER.debug(
-                "%s: Heat requesting changed: %s (TRV: %s, Current: %.1f C, Target: %.1f C%s)",
+                "%s: Heat requesting changed: %s",
                 self._attr_name,
                 "YES" if self._heat_requesting else "NO",
-                trv_hvac_mode,
-                current_temp or 0,
-                trv_target or 0,
-                f", Sensor: {self._temp_sensor}" if self._temp_sensor else "",
             )
 
         self.async_write_ha_state()
@@ -528,27 +518,26 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         self._attr_target_temperature = temperature
         self.async_write_ha_state()
         _LOGGER.debug(
-            "%s: Set target temperature to %.1f C",
-            self._attr_name,
-            temperature,
-        )
-
-        _LOGGER.debug(
-            "%s: Forwarding temperature %.1f C to TRV %s",
+            "%s: Set target temperature to %.1f C, forwarding to TRV %s",
             self._attr_name,
             temperature,
             self._trv_entity,
         )
+
         try:
-            await self.hass.services.async_call(
-                CLIMATE_DOMAIN,
-                "set_temperature",
-                {
-                    ATTR_ENTITY_ID: self._trv_entity,
-                    ATTR_TEMPERATURE: temperature,
-                },
-                blocking=False,
-            )
+            room_sm = self._get_room_state_machine()
+            if room_sm:
+                await room_sm.async_set_trv_target_temp(temperature)
+            else:
+                await self.hass.services.async_call(
+                    CLIMATE_DOMAIN,
+                    "set_temperature",
+                    {
+                        ATTR_ENTITY_ID: self._trv_entity,
+                        ATTR_TEMPERATURE: temperature,
+                    },
+                    blocking=True,
+                )
         except Exception:
             _LOGGER.exception(
                 "%s: Failed to forward temperature to TRV %s",

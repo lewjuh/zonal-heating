@@ -95,8 +95,9 @@ class ZoneStateMachine:
                 STARTUP_GRACE_PERIOD,
             )
 
-        # Start all room state machines
+        # Start all room state machines and register callbacks
         for room in self.rooms:
+            room.set_on_needs_heat_changed(self._on_room_needs_heat_changed)
             await room.async_start()
 
         # Track zone climate changes
@@ -189,6 +190,17 @@ class ZoneStateMachine:
 
         self._eval_debounce_timer = self.hass.loop.call_later(
             1.0,
+            lambda: self.hass.async_create_task(self._async_debounced_evaluate()),
+        )
+
+    @callback
+    def _on_room_needs_heat_changed(self) -> None:
+        """Handle room needs_heat change (e.g. window confirmed open/closed)."""
+        if self._eval_debounce_timer:
+            self._eval_debounce_timer.cancel()
+
+        self._eval_debounce_timer = self.hass.loop.call_later(
+            0.5,
             lambda: self.hass.async_create_task(self._async_debounced_evaluate()),
         )
 

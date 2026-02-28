@@ -82,6 +82,9 @@ class RoomStateMachine:
         self._mqtt_calibration_available = False
         self._mqtt_control_available = False
 
+        # Callback to notify zone when needs_heat changes
+        self._on_needs_heat_changed: Callable[[], None] | None = None
+
         # Listeners
         self._remove_listeners: list[Callable] = []
 
@@ -207,15 +210,17 @@ class RoomStateMachine:
                     self._window_timer.cancel()
                     self._window_timer = None
 
-                if self._window_open_confirmed:
+                was_confirmed = self._window_open_confirmed
+                self._window_open_confirmed = False
+
+                if was_confirmed:
                     _LOGGER.info(
                         "%s: Window closed, resuming heat requests",
                         self.room_name,
                     )
+                    self._notify_needs_heat_changed()
                 else:
                     _LOGGER.info("%s: Window closed", self.room_name)
-
-                self._window_open_confirmed = False
 
     def _update_window_state(self) -> None:
         """Update window open state from sensors."""
@@ -262,6 +267,7 @@ class RoomStateMachine:
             self.room_name,
             self.window_delay,
         )
+        self._notify_needs_heat_changed()
 
     async def _async_discover_sync_entities(self) -> None:
         """Discover calibration or external temp entities for this TRV."""
@@ -806,6 +812,21 @@ class RoomStateMachine:
         if not state:
             return
 
+        # If TRV is unavailable, stop requesting heat to avoid running
+        # the boiler based on stale data
+        if state.state in ("unavailable", "unknown"):
+            if self._is_on:
+                _LOGGER.warning(
+                    "%s: TRV is %s - stopping heat requests until it recovers",
+                    self.room_name,
+                    state.state,
+                )
+                old_needs_heat = self.needs_heat
+                self._is_on = False
+                if old_needs_heat and not self.needs_heat:
+                    self._notify_needs_heat_changed()
+            return
+
         old_current = self._current_temp
         old_target = self._target_temp
         old_is_on = self._is_on
@@ -926,6 +947,15 @@ class RoomStateMachine:
     def mqtt_control_available(self) -> bool:
         """Return True if MQTT control is available for this TRV."""
         return self._mqtt_control_available
+
+    def set_on_needs_heat_changed(self, callback: Callable[[], None]) -> None:
+        """Set callback for when needs_heat state changes."""
+        self._on_needs_heat_changed = callback
+
+    def _notify_needs_heat_changed(self) -> None:
+        """Notify zone that needs_heat may have changed."""
+        if self._on_needs_heat_changed:
+            self._on_needs_heat_changed()
 
     async def _async_restore_state(self) -> None:
         """Restore state from persistent storage."""
