@@ -20,13 +20,10 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
-from .const import FROST_PROTECTION_TEMP
-
 if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import datetime
 
-    from .scheduler import RoomScheduler
     from .storage import ZonalHeatingStorage
 
 _LOGGER = logging.getLogger(__name__)
@@ -43,7 +40,6 @@ class RoomStateMachine:
         window_sensors: list[str],
         window_delay: int = 30,
         temp_differential: float = 0.5,
-        overheat_threshold: float = 1.0,
         temp_sensor: str | None = None,
         calibration_sync: bool = False,
         storage: "ZonalHeatingStorage | None" = None,
@@ -55,22 +51,18 @@ class RoomStateMachine:
         self.window_sensors = window_sensors
         self.window_delay = window_delay
         self.temp_differential = temp_differential
-        self.overheat_threshold = overheat_threshold
         self.temp_sensor = temp_sensor
         self.calibration_sync = calibration_sync
         self._storage = storage
 
         # State tracking
         self._window_open = False
-        self._window_open_confirmed = False  # True after delay expires
+        self._window_open_confirmed = False
         self._window_timer: asyncio.TimerHandle | None = None
         self._window_timer_started: datetime | None = None
         self._current_temp: float | None = None
         self._target_temp: float | None = None
         self._is_on = False
-        self._overheated = False
-        self._trv_turned_off_for_window = False  # Track if we turned off TRV for window
-        self._saved_target_temp: float | None = None  # Target temp before frost protection
 
         # Calibration sync tracking
         self._calibration_entity: str | None = None
@@ -88,17 +80,10 @@ class RoomStateMachine:
         # Direct MQTT sync for Zigbee2MQTT devices without exposed entities
         self._mqtt_friendly_name: str | None = None
         self._mqtt_calibration_available = False
-        self._mqtt_control_available = False  # For system_mode control
+        self._mqtt_control_available = False
 
         # Listeners
         self._remove_listeners: list[Callable] = []
-
-        # Scheduler reference (set after creation)
-        self._scheduler: "RoomScheduler | None" = None
-
-    def set_scheduler(self, scheduler: "RoomScheduler") -> None:
-        """Set the scheduler for this room."""
-        self._scheduler = scheduler
 
     async def async_start(self) -> None:
         """Start the room state machine."""
@@ -148,7 +133,6 @@ class RoomStateMachine:
                 self.room_name,
                 self.climate_entity,
             )
-            # _async_discover_sync_entities includes MQTT discovery as a fallback
             await self._async_discover_sync_entities()
             if self._external_temp_available or self._calibration_available or self._mqtt_calibration_available:
                 self.hass.loop.call_later(
@@ -179,7 +163,6 @@ class RoomStateMachine:
 
     async def async_stop(self) -> None:
         """Stop the room state machine."""
-        # Save state before stopping
         await self._async_save_state()
 
         for remove_listener in self._remove_listeners:
@@ -218,26 +201,21 @@ class RoomStateMachine:
 
         if old_state != new_state:
             if new_state:
-                # Window opened - start delay timer
                 self._start_window_delay_timer()
             else:
-                # Window closed - cancel timer and clear confirmed flag
                 if self._window_timer:
                     self._window_timer.cancel()
                     self._window_timer = None
 
-                # Bug fix: Restore TRV if we turned it off for window
-                if self._window_open_confirmed and self._trv_turned_off_for_window:
+                if self._window_open_confirmed:
                     _LOGGER.info(
-                        "%s: Window closed, restoring TRV to HEAT mode",
+                        "%s: Window closed, resuming heat requests",
                         self.room_name,
                     )
-                    self.hass.async_create_task(self._async_restore_trv_after_window())
                 else:
                     _LOGGER.info("%s: Window closed", self.room_name)
 
                 self._window_open_confirmed = False
-                self._trv_turned_off_for_window = False
 
     def _update_window_state(self) -> None:
         """Update window open state from sensors."""
@@ -247,18 +225,17 @@ class RoomStateMachine:
         )
 
     def _start_window_delay_timer(self, delay_seconds: float | None = None) -> None:
-        """Start delay timer before confirming window open and turning off TRV."""
+        """Start delay timer before confirming window open."""
         if self._window_timer:
             self._window_timer.cancel()
 
         self._window_timer_started = dt_util.now()
 
-        # Use provided delay or default
         if delay_seconds is None:
             delay_seconds = self.window_delay
 
         _LOGGER.info(
-            "%s: Window opened, will confirm and turn off TRV in %.0f seconds",
+            "%s: Window opened, will confirm in %.0f seconds",
             self.room_name,
             delay_seconds,
         )
@@ -269,10 +246,9 @@ class RoomStateMachine:
         )
 
     async def _async_window_delay_expired(self) -> None:
-        """Handle window delay expiration - confirm window open and turn off TRV."""
+        """Handle window delay expiration - confirm window open."""
         self._window_timer = None
 
-        # Confirm window is still open
         if not self._window_open:
             _LOGGER.info(
                 "%s: Window delay expired but window already closed, ignoring",
@@ -280,40 +256,17 @@ class RoomStateMachine:
             )
             return
 
-        # Mark window as confirmed after delay
         self._window_open_confirmed = True
-        self._trv_turned_off_for_window = True
         _LOGGER.info(
-            "%s: Window open confirmed after %d second delay, setting frost protection",
+            "%s: Window open confirmed after %d second delay - suppressing heat requests",
             self.room_name,
             self.window_delay,
         )
-
-        # Set TRV to frost protection temp (never turn off TRVs)
-        await self._async_set_frost_protection()
-
-    async def _async_restore_trv_after_window(self) -> None:
-        """Restore TRV target temperature after window closes."""
-        # Don't restore if room is currently overheated
-        if self._overheated:
-            _LOGGER.info(
-                "%s: Not restoring TRV after window close - room is overheated",
-                self.room_name,
-            )
-            return
-
-        # Check if scheduler has a queued temperature to apply
-        if self._scheduler:
-            await self._scheduler.async_check_queued_temperature()
-
-        # Restore TRV target temperature
-        await self._async_restore_target_temp()
 
     async def _async_discover_sync_entities(self) -> None:
         """Discover calibration or external temp entities for this TRV."""
         device_name = self.climate_entity.split(".")[-1]
 
-        # Try device registry approach first (most reliable)
         entity_reg = er.async_get(self.hass)
         climate_entry = entity_reg.async_get(self.climate_entity)
 
@@ -325,7 +278,6 @@ class RoomStateMachine:
                 device_id,
             )
 
-            # Find all number entities on the same device
             for entry in er.async_entries_for_device(entity_reg, device_id):
                 if entry.domain != NUMBER_DOMAIN:
                     continue
@@ -333,7 +285,6 @@ class RoomStateMachine:
                 entity_id = entry.entity_id
                 entity_name = entity_id.lower()
 
-                # Check for external temperature entity
                 if any(
                     kw in entity_name
                     for kw in ["external", "room_sensor", "measured_room"]
@@ -350,7 +301,6 @@ class RoomStateMachine:
                         await self._async_configure_temp_sensor_selector(device_name)
                         return
 
-                # Check for calibration entity
                 if any(
                     kw in entity_name
                     for kw in ["calibration", "offset", "local_temp"]
@@ -424,7 +374,6 @@ class RoomStateMachine:
         """Find and configure temperature sensor selector to use external sensor."""
         selector_entity = None
 
-        # Try device registry approach first
         entity_reg = er.async_get(self.hass)
         climate_entry = entity_reg.async_get(self.climate_entity)
 
@@ -447,7 +396,6 @@ class RoomStateMachine:
                     )
                     break
 
-        # Fallback to pattern matching
         if not selector_entity:
             selector_patterns = [
                 f"select.{device_name}_sensor",
@@ -561,7 +509,6 @@ class RoomStateMachine:
             f"{trv_temp:.1f}°C" if trv_temp else "N/A",
         )
 
-        # Force sync by clearing last sync values (bypasses threshold checks)
         self._last_external_temp_sync = None
         self._last_calibration = None
 
@@ -580,7 +527,6 @@ class RoomStateMachine:
             self._calibration_available,
             self._mqtt_calibration_available,
         )
-        # Prefer direct external temp sync if available
         if self._external_temp_available:
             await self._async_sync_external_temp(external_temp)
         elif self._calibration_available:
@@ -596,29 +542,14 @@ class RoomStateMachine:
     async def _async_sync_external_temp(self, external_temp: float) -> None:
         """Sync external temperature directly to TRV."""
         if not self._external_temp_available or not self._external_temp_entity:
-            _LOGGER.debug(
-                "%s: External temp sync skipped - not available (entity: %s, available: %s)",
-                self.room_name,
-                self._external_temp_entity,
-                self._external_temp_available,
-            )
             return
 
-        # Only update if temp changed by at least 0.1 degrees
         if (
             self._last_external_temp_sync is not None
             and abs(external_temp - self._last_external_temp_sync) < 0.1
         ):
-            _LOGGER.debug(
-                "%s: External temp sync skipped - below threshold (current: %.1f, last: %.1f, diff: %.2f)",
-                self.room_name,
-                external_temp,
-                self._last_external_temp_sync,
-                abs(external_temp - self._last_external_temp_sync),
-            )
             return
 
-        # Check entity limits
         ext_state = self.hass.states.get(self._external_temp_entity)
         if not ext_state:
             return
@@ -626,7 +557,6 @@ class RoomStateMachine:
         min_temp = ext_state.attributes.get("min", 5)
         max_temp = ext_state.attributes.get("max", 35)
 
-        # Clamp to valid range
         clamped_temp = max(min_temp, min(max_temp, external_temp))
 
         if clamped_temp != external_temp:
@@ -669,7 +599,6 @@ class RoomStateMachine:
         if not self._calibration_available or not self._calibration_entity:
             return
 
-        # Get current calibration to calculate raw TRV temperature
         cal_state = self.hass.states.get(self._calibration_entity)
         if not cal_state or cal_state.state in ("unavailable", "unknown"):
             return
@@ -679,28 +608,18 @@ class RoomStateMachine:
         except (ValueError, TypeError):
             current_calibration = 0.0
 
-        # IMPORTANT: The TRV's reported temperature already includes the calibration offset.
-        # To avoid feedback oscillation, we must calculate based on the RAW internal temp.
-        # raw_temp = reported_temp - current_calibration
         raw_trv_temp = trv_temp - current_calibration
-
-        # Calculate the required calibration offset based on RAW temperature
-        # If external reads 18C and raw TRV reads 22C, we need offset of -4
-        # This makes TRV report: 22 + (-4) = 18C (matching external)
         new_calibration = round(external_temp - raw_trv_temp, 1)
 
-        # Only update if calibration changed by at least 0.2 degrees
         if (
             self._last_calibration is not None
             and abs(new_calibration - self._last_calibration) < 0.2
         ):
             return
 
-        # Get calibration entity limits
         min_cal = cal_state.attributes.get("min", -10)
         max_cal = cal_state.attributes.get("max", 10)
 
-        # Clamp calibration to valid range
         clamped_calibration = max(min_cal, min(max_cal, new_calibration))
 
         if clamped_calibration != new_calibration:
@@ -756,7 +675,6 @@ class RoomStateMachine:
         if not device:
             return
 
-        # Check if this is a Zigbee2MQTT device by looking at identifiers
         z2m_friendly_name = None
         for domain, identifier in device.identifiers:
             if domain == "mqtt":
@@ -771,7 +689,6 @@ class RoomStateMachine:
             )
             return
 
-        # Check if MQTT integration is available
         if "mqtt" not in self.hass.services.async_services():
             _LOGGER.debug(
                 "%s: MQTT service not available, cannot use direct MQTT sync",
@@ -796,30 +713,22 @@ class RoomStateMachine:
         if not self._mqtt_calibration_available or not self._mqtt_friendly_name:
             return
 
-        # Get current calibration if possible (check for any existing calibration state)
         current_calibration = 0.0
-
-        # Try to read current calibration from climate entity attributes
         climate_state = self.hass.states.get(self.climate_entity)
         if climate_state:
             current_calibration = climate_state.attributes.get(
                 "local_temperature_calibration", 0.0
             ) or 0.0
 
-        # Calculate raw TRV temperature (removing any existing calibration)
         raw_trv_temp = trv_temp - current_calibration
-
-        # Calculate required calibration offset
         new_calibration = round(external_temp - raw_trv_temp, 1)
 
-        # Only update if calibration changed by at least 0.2 degrees
         if (
             self._last_calibration is not None
             and abs(new_calibration - self._last_calibration) < 0.2
         ):
             return
 
-        # Clamp to typical Zigbee TRV calibration range (-12 to +12 for most devices)
         new_calibration = max(-12.0, min(12.0, new_calibration))
 
         try:
@@ -847,77 +756,8 @@ class RoomStateMachine:
                 self.room_name,
             )
 
-    async def _async_set_trv_mode_mqtt(self, mode: str) -> bool:
-        """Set TRV system_mode directly via MQTT. Returns True if successful."""
-        if not self._mqtt_control_available or not self._mqtt_friendly_name:
-            return False
-
-        try:
-            await self.hass.services.async_call(
-                "mqtt",
-                "publish",
-                {
-                    "topic": f"zigbee2mqtt/{self._mqtt_friendly_name}/set",
-                    "payload": json.dumps({"system_mode": mode}),
-                },
-                blocking=True,
-            )
-            _LOGGER.info(
-                "%s: [MQTT] Set system_mode to '%s'",
-                self.room_name,
-                mode,
-            )
-            return True
-        except Exception:
-            _LOGGER.exception(
-                "%s: Failed to set system_mode via MQTT, falling back to HA service",
-                self.room_name,
-            )
-            return False
-
-    async def _async_set_frost_protection(self) -> None:
-        """Set TRV to frost protection temp instead of turning off.
-
-        TRVs should always stay in heat mode. To disable heating, we set
-        a low target temperature rather than turning off the device.
-        """
-        # Save current target temp so we can restore it later
-        if self._saved_target_temp is None and self._target_temp is not None:
-            self._saved_target_temp = self._target_temp
-            _LOGGER.debug(
-                "%s: Saved target temp %.1f°C before frost protection",
-                self.room_name,
-                self._saved_target_temp,
-            )
-
-        # Set to frost protection temp via MQTT or HA service
-        await self.async_set_trv_target_temp(FROST_PROTECTION_TEMP)
-        _LOGGER.info(
-            "%s: Set TRV to frost protection (%.1f°C)",
-            self.room_name,
-            FROST_PROTECTION_TEMP,
-        )
-
-    async def _async_restore_target_temp(self) -> None:
-        """Restore TRV target temperature after frost protection ends."""
-        if self._saved_target_temp is None:
-            _LOGGER.debug(
-                "%s: No saved target temp to restore",
-                self.room_name,
-            )
-            return
-
-        await self.async_set_trv_target_temp(self._saved_target_temp)
-        _LOGGER.info(
-            "%s: Restored TRV target to %.1f°C",
-            self.room_name,
-            self._saved_target_temp,
-        )
-        self._saved_target_temp = None
-
     async def async_set_trv_target_temp(self, temperature: float) -> None:
         """Set TRV target temperature using best available method."""
-        # Try MQTT first for more reliable control
         if self._mqtt_control_available and self._mqtt_friendly_name:
             try:
                 await self.hass.services.async_call(
@@ -941,7 +781,6 @@ class RoomStateMachine:
                     self.room_name,
                 )
 
-        # Fallback to Home Assistant service
         try:
             await self.hass.services.async_call(
                 CLIMATE_DOMAIN,
@@ -970,12 +809,8 @@ class RoomStateMachine:
         old_current = self._current_temp
         old_target = self._target_temp
         old_is_on = self._is_on
-        old_overheated = self._overheated
-
-        # Calculate old heating need before updating
         old_needs_heat = self.needs_heat
 
-        # Use external temperature sensor if configured, otherwise use climate entity
         trv_temp = state.attributes.get("current_temperature")
 
         if self.temp_sensor:
@@ -985,7 +820,6 @@ class RoomStateMachine:
                     external_temp = float(temp_state.state)
                     self._current_temp = external_temp
 
-                    # Sync to TRV on external sensor events
                     if self.calibration_sync and sync_calibration and trv_temp is not None:
                         _LOGGER.debug(
                             "%s: Triggering temp sync (external: %.1f, trv: %.1f)",
@@ -997,17 +831,14 @@ class RoomStateMachine:
                 except (ValueError, TypeError):
                     self._current_temp = trv_temp
             else:
-                # External sensor unavailable - use TRV as fallback
                 self._current_temp = trv_temp
         else:
             self._current_temp = trv_temp
         self._target_temp = state.attributes.get("temperature")
         self._is_on = state.state not in ("off", "unavailable", "unknown")
 
-        # Calculate new heating need after updating
         new_needs_heat = self.needs_heat
 
-        # Log significant changes
         if old_current != self._current_temp or old_target != self._target_temp:
             _LOGGER.debug(
                 "%s: Temp update - Current: %.1f°C, Target: %.1f°C, Deficit: %.1f°C",
@@ -1017,10 +848,9 @@ class RoomStateMachine:
                 self.temperature_deficit,
             )
 
-        # Log target temperature changes specifically
         if old_target != self._target_temp:
             _LOGGER.info(
-                "%s: Target temperature changed: %.1f°C → %.1f°C",
+                "%s: Target temperature changed: %.1f°C -> %.1f°C",
                 self.room_name,
                 old_target or 0,
                 self._target_temp or 0,
@@ -1033,23 +863,17 @@ class RoomStateMachine:
                 "ON" if self._is_on else "OFF",
             )
 
-        # Log if heating need status changed
         if old_needs_heat != new_needs_heat:
             _LOGGER.info(
-                "%s: Heating need changed: %s → %s",
+                "%s: Heating need changed: %s -> %s",
                 self.room_name,
                 "NEEDS HEAT" if old_needs_heat else "NO HEAT",
                 "NEEDS HEAT" if new_needs_heat else "NO HEAT",
             )
 
-        # Check for overheating and turn off TRV if needed
-        await self._async_check_overheat(old_overheated)
-
     @property
     def needs_heat(self) -> bool:
         """Return True if room needs heat."""
-        if self._overheated:
-            return False
         if not self._is_on:
             return False
         if self._window_open_confirmed:
@@ -1089,11 +913,6 @@ class RoomStateMachine:
         return self._is_on
 
     @property
-    def overheated(self) -> bool:
-        """Return True if room is overheated."""
-        return self._overheated
-
-    @property
     def window_open_confirmed(self) -> bool:
         """Return True if window open has been confirmed after delay."""
         return self._window_open_confirmed
@@ -1108,45 +927,6 @@ class RoomStateMachine:
         """Return True if MQTT control is available for this TRV."""
         return self._mqtt_control_available
 
-    async def _async_check_overheat(self, was_overheated: bool) -> None:
-        """Check if room is overheating and set frost protection if needed."""
-        if self._current_temp is None or self._target_temp is None:
-            self._overheated = False
-            return
-
-        overheat_limit = self._target_temp + self.overheat_threshold
-        # Use hysteresis: engage at limit, clear 0.3C below limit
-        overheat_clear = overheat_limit - 0.3
-
-        if not was_overheated and self._current_temp >= overheat_limit:
-            self._overheated = True
-            _LOGGER.info(
-                "%s: OVERHEAT - Current: %.1f°C >= Limit: %.1f°C (Target: %.1f°C + %.1f°C), setting frost protection",
-                self.room_name,
-                self._current_temp,
-                overheat_limit,
-                self._target_temp,
-                self.overheat_threshold,
-            )
-
-            # Set TRV to frost protection (never turn off TRVs)
-            await self._async_set_frost_protection()
-        elif was_overheated and self._current_temp < overheat_clear:
-            self._overheated = False
-            _LOGGER.info(
-                "%s: OVERHEAT CLEARED - Temp %.1f°C < Clear threshold %.1f°C, restoring target temp",
-                self.room_name,
-                self._current_temp,
-                overheat_clear,
-            )
-
-            # Check if scheduler has a queued temperature to apply
-            if self._scheduler:
-                await self._scheduler.async_check_queued_temperature()
-
-            # Restore TRV target temperature
-            await self._async_restore_target_temp()
-
     async def _async_restore_state(self) -> None:
         """Restore state from persistent storage."""
         if self._storage is None:
@@ -1156,10 +936,8 @@ class RoomStateMachine:
         if stored is None:
             return
 
-        # Import here to avoid circular import
         from .storage import parse_datetime
 
-        # Check if stored state is recent (within 1 hour for rooms)
         saved_at = parse_datetime(stored.get("saved_at"))
         if saved_at is None:
             return
@@ -1174,24 +952,16 @@ class RoomStateMachine:
             self._storage.clear_room_state(self.room_name)
             return
 
-        # Restore window-related state
         self._window_open = stored.get("window_open", False)
         self._window_open_confirmed = stored.get("window_open_confirmed", False)
-        self._trv_turned_off_for_window = stored.get("trv_turned_off_for_window", False)
-        self._overheated = stored.get("overheated", False)
-        self._saved_target_temp = stored.get("saved_target_temp")
 
         _LOGGER.info(
-            "%s: Restored state - window_open=%s, confirmed=%s, trv_off=%s, overheated=%s, saved_target=%s",
+            "%s: Restored state - window_open=%s, confirmed=%s",
             self.room_name,
             self._window_open,
             self._window_open_confirmed,
-            self._trv_turned_off_for_window,
-            self._overheated,
-            self._saved_target_temp,
         )
 
-        # Restore window timer if it was running
         timer_remaining = stored.get("window_timer_remaining")
         if timer_remaining and timer_remaining > 0 and self._window_open:
             _LOGGER.info(
@@ -1206,7 +976,6 @@ class RoomStateMachine:
         if self._storage is None:
             return
 
-        # Calculate remaining time on window timer
         window_timer_remaining = None
         if self._window_timer and self._window_timer_started:
             elapsed = (dt_util.now() - self._window_timer_started).total_seconds()
@@ -1217,9 +986,6 @@ class RoomStateMachine:
             window_open=self._window_open,
             window_open_confirmed=self._window_open_confirmed,
             window_timer_remaining=window_timer_remaining,
-            trv_turned_off_for_window=self._trv_turned_off_for_window,
-            overheated=self._overheated,
-            saved_target_temp=self._saved_target_temp,
         )
 
         _LOGGER.debug(

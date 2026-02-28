@@ -46,22 +46,14 @@
                 "description": "Configure global settings that apply to all zones and rooms.",
                 "data": {
                     "temp_differential": "Temperature Differential (°C)",
-                    "overheat_threshold": "Overheat Threshold (°C)",
                     "min_cycle_time": "Minimum Cycle Time (minutes)",
                     "window_delay": "Window Open Delay (seconds)",
-                    "person_entities": "Person Entities (Optional)",
-                    "away_temperature": "Away Mode Temperature (°C)",
-                    "away_mode_delay": "Away Mode Delay (minutes)",
                     "calibration_sync": "Sync External Temp to TRV"
                 },
                 "data_description": {
                     "temp_differential": "How far below target temperature before requesting heat (e.g., 0.5°C means heat when 0.5° below target)",
-                    "overheat_threshold": "How far above target temperature before TRV turns off (e.g., 1.0°C means turn off when 1° above target)",
                     "min_cycle_time": "Minimum time between zone thermostat on/off changes to prevent rapid cycling",
                     "window_delay": "Wait time after window opens before pausing heating (prevents false triggers)",
-                    "person_entities": "People to track for away mode - when all are away, heating enters low power mode",
-                    "away_temperature": "Temperature to set all TRVs to when everyone is away (default: 16°C)",
-                    "away_mode_delay": "Wait time after everyone leaves before activating away mode - cancels if anyone returns (default: 10 minutes)",
                     "calibration_sync": "Sync external sensor temperature to TRV via calibration offset or direct input. Forces TRV to use external sensor reading."
                 }
             },
@@ -145,22 +137,14 @@
                 "description": "Update global settings that apply to all zones and rooms. The integration will reload to apply changes.",
                 "data": {
                     "temp_differential": "[%key:component::zonal_heating::config::step::settings::data::temp_differential%]",
-                    "overheat_threshold": "[%key:component::zonal_heating::config::step::settings::data::overheat_threshold%]",
                     "min_cycle_time": "[%key:component::zonal_heating::config::step::settings::data::min_cycle_time%]",
                     "window_delay": "[%key:component::zonal_heating::config::step::settings::data::window_delay%]",
-                    "person_entities": "[%key:component::zonal_heating::config::step::settings::data::person_entities%]",
-                    "away_temperature": "[%key:component::zonal_heating::config::step::settings::data::away_temperature%]",
-                    "away_mode_delay": "[%key:component::zonal_heating::config::step::settings::data::away_mode_delay%]",
                     "calibration_sync": "[%key:component::zonal_heating::config::step::settings::data::calibration_sync%]"
                 },
                 "data_description": {
                     "temp_differential": "[%key:component::zonal_heating::config::step::settings::data_description::temp_differential%]",
-                    "overheat_threshold": "[%key:component::zonal_heating::config::step::settings::data_description::overheat_threshold%]",
                     "min_cycle_time": "[%key:component::zonal_heating::config::step::settings::data_description::min_cycle_time%]",
                     "window_delay": "[%key:component::zonal_heating::config::step::settings::data_description::window_delay%]",
-                    "person_entities": "[%key:component::zonal_heating::config::step::settings::data_description::person_entities%]",
-                    "away_temperature": "[%key:component::zonal_heating::config::step::settings::data_description::away_temperature%]",
-                    "away_mode_delay": "[%key:component::zonal_heating::config::step::settings::data_description::away_mode_delay%]",
                     "calibration_sync": "[%key:component::zonal_heating::config::step::settings::data_description::calibration_sync%]"
                 }
             }

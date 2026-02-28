@@ -27,15 +27,12 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
-    ATTR_AWAY_MODE,
     ATTR_HEAT_REQUESTING,
-    ATTR_PEOPLE_HOME,
     ATTR_PRIORITY,
     ATTR_WINDOW_OPEN,
     ATTR_ZONE_ACTIVE,
     CONF_PRIORITY,
     CONF_ROOMS,
-    CONF_SETTINGS,
     CONF_TEMP_SENSOR,
     CONF_TRV_ENTITY,
     CONF_WINDOW_SENSORS,
@@ -58,7 +55,6 @@ async def async_setup_entry(
     )
 
     zones = entry.data.get(CONF_ZONES, [])
-    settings = entry.data.get(CONF_SETTINGS, {})
 
     entities = []
     for zone_idx, zone in enumerate(zones):
@@ -90,7 +86,6 @@ async def async_setup_entry(
                 temp_sensor=temp_sensor,
                 window_sensors=window_sensors,
                 priority=priority,
-                settings=settings,
             )
             entities.append(entity)
 
@@ -122,7 +117,6 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         temp_sensor: str | None,
         window_sensors: list[str],
         priority: int,
-        settings: dict[str, Any],
     ) -> None:
         """Initialize the zonal heating climate entity."""
         self.hass = hass
@@ -134,7 +128,6 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         self._temp_sensor = temp_sensor
         self._window_sensors = window_sensors
         self._priority = priority
-        self._settings = settings
 
         # Entity state
         self._attr_hvac_mode = HVACMode.HEAT
@@ -185,7 +178,7 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             )
             self._priority = last_state.attributes.get(ATTR_PRIORITY, self._priority)
 
-        # Track TRV state changes (store unsub for cleanup)
+        # Track TRV state changes
         self._remove_listeners.append(
             async_track_state_change_event(
                 self.hass, [self._trv_entity], self._async_trv_changed
@@ -215,7 +208,7 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             )
         )
 
-        # Suppress TRV→virtual target sync until startup sync completes
+        # Suppress TRV->virtual target sync until startup sync completes
         self._target_set_at = self.hass.loop.time()
 
         # Initial update
@@ -223,7 +216,7 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         self._async_update_window_state()
         self._async_update_zone_active()
 
-        # Schedule TRV target sync after brief delay (store handle for cancellation)
+        # Schedule TRV target sync after brief delay
         self._startup_sync_timer = self.hass.loop.call_later(
             3.0,
             lambda: self.hass.async_create_task(self._async_startup_sync_trv()),
@@ -443,16 +436,6 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
 
         return None
 
-    def _get_room_scheduler(self):
-        """Get the room scheduler for this climate entity."""
-        if DOMAIN not in self.hass.data:
-            return None
-        if self._entry_id not in self.hass.data[DOMAIN]:
-            return None
-
-        schedulers = self.hass.data[DOMAIN][self._entry_id].get("schedulers", {})
-        return schedulers.get(self._room_name)
-
     @property
     def hvac_action(self) -> HVACAction:
         """Return the current HVAC action."""
@@ -488,37 +471,18 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             attrs["sm_needs_heat"] = room_state_machine.needs_heat
             attrs["sm_temperature_deficit"] = round(room_state_machine.temperature_deficit, 2)
             attrs["sm_window_confirmed"] = room_state_machine.window_open_confirmed
-            attrs["sm_overheated"] = room_state_machine.overheated
             attrs["sm_is_on"] = room_state_machine.is_on
 
             if room_state_machine.target_temperature is not None:
                 attrs["heat_threshold"] = round(
                     room_state_machine.target_temperature - room_state_machine.temp_differential, 1
                 )
-                attrs["overheat_limit"] = round(
-                    room_state_machine.target_temperature + room_state_machine.overheat_threshold, 1
-                )
 
         if zone_coordinator:
-            attrs[ATTR_AWAY_MODE] = zone_coordinator.away_mode
-            if zone_coordinator.person_entities:
-                attrs[ATTR_PEOPLE_HOME] = zone_coordinator.people_home_count
-
             attrs["zone_cycle_blocking"] = (
                 zone_coordinator.last_zone_change is not None
                 and zone_coordinator.retry_timer_active
             )
-
-        scheduler = self._get_room_scheduler()
-        if scheduler:
-            attrs["schedule_enabled"] = scheduler.schedule_enabled
-            attrs["scheduled_temperature"] = scheduler.get_current_scheduled_temp()
-            attrs["manual_override_active"] = scheduler.manual_override_active
-            attrs["queued_temperature"] = scheduler.queued_temperature
-            next_point = scheduler.get_next_schedule_point()
-            if next_point:
-                attrs["next_schedule_time"] = next_point[0]
-                attrs["next_schedule_temp"] = next_point[1]
 
         attrs["status_reason"] = self._build_reason(zone_coordinator, room_state_machine)
 
@@ -526,20 +490,9 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
 
     def _build_reason(self, zone_coordinator, room_sm) -> str:
         """Build detailed reason for current state."""
-        if zone_coordinator and zone_coordinator.away_mode and not zone_coordinator.away_mode_timer_active:
-            return "Away mode active - low power"
-
-        if zone_coordinator and zone_coordinator.away_mode_pending:
-            return f"Away mode pending ({zone_coordinator.away_mode_delay}min delay)"
-
         if room_sm:
-            if room_sm.overheated:
-                if room_sm.target_temperature is not None:
-                    return f"Overheated - TRV turned off (temp >= {room_sm.target_temperature + room_sm.overheat_threshold:.1f}C)"
-                return "Overheated - TRV turned off"
-
             if room_sm.window_open_confirmed:
-                return "Window confirmed open - TRV turned off"
+                return "Window confirmed open - heating suppressed"
 
             if room_sm.window_open and room_sm.window_timer_active:
                 return f"Window detected - waiting {room_sm.window_delay}s to confirm"
@@ -579,10 +532,6 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             self._attr_name,
             temperature,
         )
-
-        scheduler = self._get_room_scheduler()
-        if scheduler:
-            scheduler.handle_manual_override(temperature)
 
         _LOGGER.debug(
             "%s: Forwarding temperature %.1f C to TRV %s",

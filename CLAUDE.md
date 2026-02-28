@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a Home Assistant custom integration for intelligent multi-zone heating control. It coordinates zone thermostats with individual room TRVs (thermostatic radiator valves) using a dual state machine architecture.
 
+The core principle is **"set and hold"**: the user sets a temperature on a room, and the system holds it indefinitely. No system ever changes the user's chosen TRV target temperature behind their back.
+
 ## Architecture
 
 ### State Machine Pattern
@@ -24,19 +26,29 @@ The integration uses a **two-level state machine hierarchy**:
    - Monitors TRV temperature and state
    - Handles window sensor integration with configurable delay
    - Calculates heating need based on temperature differential
+   - Optional calibration sync (external temp sensor -> TRV calibration offset)
    - Reports heating demand to zone coordinator
 
 ### Component Interaction Flow
 
 ```
-ConfigFlow → __init__.py → Climate Entities (UI layer)
-                ↓
+ConfigFlow -> __init__.py -> Climate Entities (UI layer)
+                |
          Zone State Machine (coordinator)
-                ↓
+                |
          Room State Machines (workers)
-                ↓
+                |
          TRV Entities (hardware)
 ```
+
+### Temperature Write Points
+
+Only **4 paths** write to TRVs:
+
+1. **User sets temperature** via virtual entity -> forwards to TRV (`climate.py`)
+2. **Startup sync** pushes restored target to TRV (`climate.py`)
+3. **Calibration sync** writes external temp/offset to TRV number entity (`room_state_machine.py`) - not a target temp write
+4. **Zone thermostat** gets set to current+5 when turning on (`zone_state_machine.py`)
 
 ### Key Design Decisions
 
@@ -48,7 +60,9 @@ ConfigFlow → __init__.py → Climate Entities (UI layer)
 
 4. **Minimum Cycle Time Protection**: Zone state machine prevents rapid zone thermostat cycling with configurable minimum time between state changes. When blocked, it automatically schedules retry.
 
-5. **Window Detection with Delay**: Room state machine implements a delay timer before confirming window open state to prevent false triggers from brief door/window openings.
+5. **Window Detection Suppresses Demand Only**: When a window opens (after configurable delay), the room's `needs_heat` flag is suppressed so the zone won't call for heat. The TRV target temperature is never changed.
+
+6. **Target Set Suppression**: After the user changes temperature via the virtual entity, TRV-to-virtual sync is suppressed for 5 seconds (`_target_set_at`) to prevent the old TRV state from overwriting the new target before the TRV has processed it.
 
 ## Development Commands
 
@@ -93,7 +107,7 @@ git push origin feature/your-feature-name
 # After merge to main, users update via HACS
 ```
 
-## File Structure Critical Points
+## File Structure
 
 ```
 custom_components/zonal_heating/
@@ -104,6 +118,8 @@ custom_components/zonal_heating/
 ├── const.py               # Constants, defaults, attributes
 ├── room_state_machine.py  # Room-level control logic
 ├── zone_state_machine.py  # Zone-level coordination logic
+├── sensor.py              # Diagnostic sensors (zone/room status)
+├── storage.py             # Persistent state storage with migration
 ├── strings.json           # UI text (primary source)
 └── translations/
     └── en.json            # Translated UI text (fallback)
@@ -113,11 +129,13 @@ custom_components/zonal_heating/
 
 The `config_flow.py` implements a **multi-step wizard**:
 
-1. `async_step_user` → `async_step_add_zone` (add zones)
+1. `async_step_user` -> `async_step_add_zone` (add zones)
 2. `async_step_add_room` (add rooms to current zone, repeatable)
 3. `async_step_zone_complete` (add more rooms or finish zone)
 4. `async_step_zones_complete` (add more zones or continue)
 5. `async_step_settings` (global settings, creates entry)
+
+**Settings**: temp_differential, min_cycle_time, window_delay, calibration_sync
 
 **Reconfiguration Support**: `async_step_reconfigure` allows editing existing zones/rooms without recreating the entire config entry.
 
@@ -132,7 +150,7 @@ The `config_flow.py` implements a **multi-step wizard**:
 - Evaluates on any room climate state change
 - Turns zone ON if any room `needs_heat` with `temperature_deficit > 0`
 - Respects `min_cycle_time` and schedules automatic retry when blocked
-- Sets zone temp to `current + 5°C` when turning on (ensures boiler triggers)
+- Sets zone temp to `current + 5C` when turning on (ensures boiler triggers)
 
 ## Common Issues & Solutions
 
@@ -147,15 +165,13 @@ The `config_flow.py` implements a **multi-step wizard**:
 3. Zone not blocked by `min_cycle_time` (look for "MIN CYCLE TIME BLOCKING" warnings)
 
 ### Window Sensors Not Working
-**Debug**: Check for "Window opened, will confirm and turn off TRV in X seconds" logs. The delay (default 30s) prevents false triggers. TRV only turns off after delay confirms window still open.
+**Debug**: Check for "Window opened" log entries. The delay (default 30s) prevents false triggers. When confirmed open, the room suppresses its `needs_heat` flag but the TRV target temperature remains unchanged.
 
 ## Logging Strategy
 
 The code uses **structured, searchable log messages**:
 - `_LOGGER.info()` for state changes and decisions
 - `_LOGGER.debug()` for detailed reasoning
-- Visual separators (`"=" * 60`, `"🔥" * 30`) for major events
-- Emoji markers (✓, ✗, 🔄, ⏱️, 🔥, ❄️) for quick visual scanning
 
 When debugging, search logs for:
 - `"ZONE EVALUATION"` - zone decision points

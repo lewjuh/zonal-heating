@@ -14,7 +14,7 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-STORAGE_VERSION = 2
+STORAGE_VERSION = 3
 STORAGE_KEY = f"{DOMAIN}.state"
 
 
@@ -25,10 +25,18 @@ class _ZonalHeatingStore(Store):
         self, old_major_version: int, old_minor_version: int, old_data: dict
     ) -> dict:
         """Migrate stored data from older versions."""
-        if old_major_version == 1:
-            if "schedules" not in old_data:
-                old_data["schedules"] = {}
-            _LOGGER.info("Migrated storage from v%s to v2", old_major_version)
+        if old_major_version < 3:
+            # v1->v2 added schedules; v2->v3 removes schedules, away mode, overheat
+            old_data.pop("schedules", None)
+            for zone_data in old_data.get("zones", {}).values():
+                zone_data.pop("away_mode_pending", None)
+                zone_data.pop("away_mode_timer_remaining", None)
+                zone_data.pop("pre_away_targets", None)
+            for room_data in old_data.get("rooms", {}).values():
+                room_data.pop("overheated", None)
+                room_data.pop("trv_turned_off_for_window", None)
+                room_data.pop("saved_target_temp", None)
+            _LOGGER.info("Migrated storage from v%s to v3", old_major_version)
         return old_data
 
 
@@ -46,7 +54,7 @@ class ZonalHeatingStorage:
         """Load stored data."""
         data = await self._store.async_load()
         if data is None:
-            data = {"zones": {}, "rooms": {}, "schedules": {}}
+            data = {"zones": {}, "rooms": {}}
         self._data = data
         _LOGGER.debug("Loaded persistent state: %s", data)
         return data
@@ -59,7 +67,7 @@ class ZonalHeatingStorage:
     async def async_remove(self) -> None:
         """Remove stored data."""
         await self._store.async_remove()
-        self._data = {"zones": {}, "rooms": {}, "schedules": {}}
+        self._data = {"zones": {}, "rooms": {}}
 
     def get_zone_state(self, zone_name: str) -> dict[str, Any] | None:
         """Get stored state for a zone."""
@@ -70,9 +78,6 @@ class ZonalHeatingStorage:
         zone_name: str,
         zone_is_on: bool,
         last_zone_change: datetime | None,
-        away_mode_pending: bool,
-        away_mode_timer_remaining: float | None,
-        pre_away_targets: dict[str, float] | None = None,
     ) -> None:
         """Set state for a zone."""
         if "zones" not in self._data:
@@ -81,9 +86,6 @@ class ZonalHeatingStorage:
         self._data["zones"][zone_name] = {
             "zone_is_on": zone_is_on,
             "last_zone_change": last_zone_change.isoformat() if last_zone_change else None,
-            "away_mode_pending": away_mode_pending,
-            "away_mode_timer_remaining": away_mode_timer_remaining,
-            "pre_away_targets": pre_away_targets,
             "saved_at": dt_util.now().isoformat(),
         }
 
@@ -97,9 +99,6 @@ class ZonalHeatingStorage:
         window_open: bool,
         window_open_confirmed: bool,
         window_timer_remaining: float | None,
-        trv_turned_off_for_window: bool,
-        overheated: bool,
-        saved_target_temp: float | None = None,
     ) -> None:
         """Set state for a room."""
         if "rooms" not in self._data:
@@ -109,9 +108,6 @@ class ZonalHeatingStorage:
             "window_open": window_open,
             "window_open_confirmed": window_open_confirmed,
             "window_timer_remaining": window_timer_remaining,
-            "trv_turned_off_for_window": trv_turned_off_for_window,
-            "overheated": overheated,
-            "saved_target_temp": saved_target_temp,
             "saved_at": dt_util.now().isoformat(),
         }
 
@@ -124,77 +120,6 @@ class ZonalHeatingStorage:
         """Clear stored state for a zone."""
         if "zones" in self._data and zone_name in self._data["zones"]:
             del self._data["zones"][zone_name]
-
-    def get_room_schedule(self, room_name: str) -> dict[str, Any] | None:
-        """Get stored schedule for a room."""
-        return self._data.get("schedules", {}).get(room_name)
-
-    def set_room_schedule(
-        self,
-        room_name: str,
-        schedule: dict[str, Any],
-    ) -> None:
-        """Set schedule for a room."""
-        if "schedules" not in self._data:
-            self._data["schedules"] = {}
-
-        validated = self._validate_schedule(schedule)
-        self._data["schedules"][room_name] = validated
-        _LOGGER.info(
-            "Updated schedule for %s: enabled=%s, weekday=%d points, weekend=%d points",
-            room_name,
-            validated.get("enabled", True),
-            len(validated.get("weekday", [])),
-            len(validated.get("weekend", [])),
-        )
-
-    def delete_room_schedule(self, room_name: str) -> None:
-        """Delete schedule for a room."""
-        if "schedules" in self._data and room_name in self._data["schedules"]:
-            del self._data["schedules"][room_name]
-            _LOGGER.info("Deleted schedule for %s", room_name)
-
-    def get_all_schedules(self) -> dict[str, Any]:
-        """Get all room schedules."""
-        return self._data.get("schedules", {})
-
-    def _validate_schedule(self, schedule: dict[str, Any]) -> dict[str, Any]:
-        """Validate and normalise a schedule."""
-        validated = {
-            "enabled": schedule.get("enabled", True),
-            "weekday": self._validate_schedule_points(schedule.get("weekday", [])),
-            "weekend": self._validate_schedule_points(schedule.get("weekend", [])),
-        }
-        return validated
-
-    def _validate_schedule_points(self, points: list) -> list:
-        """Validate and sort schedule points."""
-        valid_points = []
-        for point in points:
-            if self._is_valid_schedule_point(point):
-                valid_points.append({
-                    "time": point["time"],
-                    "temperature": float(point["temperature"]),
-                })
-        return sorted(valid_points, key=lambda p: p["time"])
-
-    def _is_valid_schedule_point(self, point: dict) -> bool:
-        """Check if a schedule point is valid."""
-        if not isinstance(point, dict):
-            return False
-        if "time" not in point or "temperature" not in point:
-            return False
-        try:
-            datetime.strptime(point["time"], "%H:%M")
-        except ValueError:
-            return False
-        try:
-            temp = float(point["temperature"])
-            if not 5.0 <= temp <= 30.0:
-                return False
-        except (ValueError, TypeError):
-            return False
-        return True
 
 
 def parse_datetime(iso_string: str | None) -> datetime | None:

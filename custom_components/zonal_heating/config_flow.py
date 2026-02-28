@@ -10,7 +10,6 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.components.binary_sensor import DOMAIN as BINARY_SENSOR_DOMAIN
 from homeassistant.components.climate import DOMAIN as CLIMATE_DOMAIN
-from homeassistant.components.person import DOMAIN as PERSON_DOMAIN
 from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
@@ -18,12 +17,8 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
 from .const import (
-    CONF_AWAY_MODE_DELAY,
-    CONF_AWAY_TEMPERATURE,
     CONF_CALIBRATION_SYNC,
     CONF_MIN_CYCLE_TIME,
-    CONF_OVERHEAT_THRESHOLD,
-    CONF_PERSON_ENTITIES,
     CONF_PRIORITY,
     CONF_ROOMS,
     CONF_SETTINGS,
@@ -35,11 +30,8 @@ from .const import (
     CONF_ZONE_NAME,
     CONF_ZONE_THERMOSTAT,
     CONF_ZONES,
-    DEFAULT_AWAY_MODE_DELAY,
-    DEFAULT_AWAY_TEMPERATURE,
     DEFAULT_CALIBRATION_SYNC,
     DEFAULT_MIN_CYCLE_TIME,
-    DEFAULT_OVERHEAT_THRESHOLD,
     DEFAULT_PRIORITY,
     DEFAULT_TEMP_DIFFERENTIAL,
     DEFAULT_WINDOW_DELAY,
@@ -77,7 +69,6 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle the initial step - go directly to adding zones."""
-        # Set default title and skip directly to zone setup
         self._title = "Zonal Heating"
         return await self.async_step_add_zone()
 
@@ -88,7 +79,6 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            # Validate zone thermostat is a climate entity
             zone_thermostat = user_input[CONF_ZONE_THERMOSTAT]
             if not self.hass.states.get(zone_thermostat):
                 errors["base"] = "invalid_thermostat"
@@ -137,17 +127,13 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             trv_entity = user_input[CONF_TRV_ENTITY]
             room_name = user_input[CONF_NAME]
 
-            # Validate TRV entity exists
             if not self.hass.states.get(trv_entity):
                 errors["base"] = "invalid_trv"
-            # Check if TRV already used in current zone
             elif trv_entity in [r[CONF_TRV_ENTITY] for r in self._current_rooms]:
                 errors["base"] = "duplicate_trv"
-            # Check room name uniqueness across all zones
             elif room_name in self._get_existing_room_names():
                 errors["base"] = "duplicate_room_name"
             else:
-                # Add room to current zone
                 room = {
                     CONF_NAME: user_input[CONF_NAME],
                     CONF_TRV_ENTITY: trv_entity,
@@ -157,7 +143,6 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }
                 self._current_rooms.append(room)
 
-                # Ask if user wants to add another room or finish zone
                 return await self.async_step_zone_complete()
 
         return self.async_show_form(
@@ -202,11 +187,9 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if user_input.get("add_another_room"):
                 return await self.async_step_add_room()
 
-            # Finish current zone
             self._current_zone[CONF_ROOMS] = self._current_rooms
             self._zones.append(self._current_zone)
 
-            # Ask if user wants to add another zone
             return await self.async_step_zones_complete()
 
         return self.async_show_form(
@@ -230,7 +213,6 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if user_input.get("add_another_zone"):
                 return await self.async_step_add_zone()
 
-            # Continue to global settings
             return await self.async_step_settings()
 
         return self.async_show_form(
@@ -250,17 +232,12 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Configure global settings."""
         if user_input is not None:
-            # Create the config entry
             config_data = {
                 CONF_ZONES: self._zones,
                 CONF_SETTINGS: {
                     CONF_TEMP_DIFFERENTIAL: user_input[CONF_TEMP_DIFFERENTIAL],
-                    CONF_OVERHEAT_THRESHOLD: user_input[CONF_OVERHEAT_THRESHOLD],
                     CONF_MIN_CYCLE_TIME: user_input[CONF_MIN_CYCLE_TIME],
                     CONF_WINDOW_DELAY: user_input[CONF_WINDOW_DELAY],
-                    CONF_PERSON_ENTITIES: user_input.get(CONF_PERSON_ENTITIES, []),
-                    CONF_AWAY_TEMPERATURE: user_input[CONF_AWAY_TEMPERATURE],
-                    CONF_AWAY_MODE_DELAY: user_input[CONF_AWAY_MODE_DELAY],
                     CONF_CALIBRATION_SYNC: user_input.get(
                         CONF_CALIBRATION_SYNC, DEFAULT_CALIBRATION_SYNC
                     ),
@@ -281,10 +258,6 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         default=DEFAULT_TEMP_DIFFERENTIAL,
                     ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=5.0)),
                     vol.Optional(
-                        CONF_OVERHEAT_THRESHOLD,
-                        default=DEFAULT_OVERHEAT_THRESHOLD,
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0.5, max=5.0)),
-                    vol.Optional(
                         CONF_MIN_CYCLE_TIME,
                         default=DEFAULT_MIN_CYCLE_TIME,
                     ): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
@@ -292,20 +265,6 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_WINDOW_DELAY,
                         default=DEFAULT_WINDOW_DELAY,
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=300)),
-                    vol.Optional(CONF_PERSON_ENTITIES): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain=PERSON_DOMAIN,
-                            multiple=True,
-                        )
-                    ),
-                    vol.Optional(
-                        CONF_AWAY_TEMPERATURE,
-                        default=DEFAULT_AWAY_TEMPERATURE,
-                    ): vol.All(vol.Coerce(float), vol.Range(min=5.0, max=25.0)),
-                    vol.Optional(
-                        CONF_AWAY_MODE_DELAY,
-                        default=DEFAULT_AWAY_MODE_DELAY,
-                    ): vol.All(vol.Coerce(int), vol.Range(min=0, max=120)),
                     vol.Optional(
                         CONF_CALIBRATION_SYNC,
                         default=DEFAULT_CALIBRATION_SYNC,
@@ -318,10 +277,8 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle reconfiguration - select which zone to edit."""
-        # Get the config entry being reconfigured
         self._reconfigure_entry = self._get_reconfigure_entry()
 
-        # Load existing zones
         self._zones = self._reconfigure_entry.data.get(CONF_ZONES, [])
 
         if not self._zones:
@@ -334,7 +291,6 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._current_rooms = self._current_zone.get(CONF_ROOMS, []).copy()
             return await self.async_step_reconfigure_zone()
 
-        # Build zone selection options
         zone_options = {
             idx: f"{zone.get(CONF_ZONE_NAME, f'Zone {idx}')} ({zone.get(CONF_ZONE_THERMOSTAT)})"
             for idx, zone in enumerate(self._zones)
@@ -361,10 +317,8 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             zone_thermostat = user_input[CONF_ZONE_THERMOSTAT]
 
-            # Validate zone thermostat exists
             if not self.hass.states.get(zone_thermostat):
                 errors["base"] = "invalid_thermostat"
-            # Check if thermostat is used by another zone
             elif any(
                 idx != self._reconfigure_zone_index
                 and z[CONF_ZONE_THERMOSTAT] == zone_thermostat
@@ -372,12 +326,10 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ):
                 errors["base"] = "duplicate_zone_thermostat"
             else:
-                # Update zone details
                 self._current_zone[CONF_ZONE_NAME] = user_input[CONF_ZONE_NAME]
                 self._current_zone[CONF_ZONE_THERMOSTAT] = zone_thermostat
                 return await self.async_step_reconfigure_zone_menu()
 
-        # Pre-fill with current values
         return self.async_show_form(
             step_id="reconfigure_zone",
             data_schema=vol.Schema(
@@ -412,11 +364,9 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if action == "delete_room":
                 return await self.async_step_select_room_to_delete()
             if action == "save":
-                # Save changes
                 self._current_zone[CONF_ROOMS] = self._current_rooms
                 self._zones[self._reconfigure_zone_index] = self._current_zone
 
-                # Update config entry
                 new_data = self._reconfigure_entry.data.copy()
                 new_data[CONF_ZONES] = self._zones
 
@@ -506,12 +456,10 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             trv_entity = user_input[CONF_TRV_ENTITY]
             room_name = user_input[CONF_NAME]
 
-            # Get current room name if editing (to exclude from uniqueness check)
             current_name = None
             if self._reconfigure_room_index is not None:
                 current_name = self._current_rooms[self._reconfigure_room_index].get(CONF_NAME)
 
-            # Collect room names from other zones
             other_zone_names: set[str] = set()
             for idx, zone in enumerate(self._zones):
                 if idx == self._reconfigure_zone_index:
@@ -519,7 +467,6 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 for room in zone.get(CONF_ROOMS, []):
                     other_zone_names.add(room.get(CONF_NAME, ""))
 
-            # Collect room names from current zone (excluding the room being edited)
             current_zone_names = {
                 r.get(CONF_NAME, "")
                 for i, r in enumerate(self._current_rooms)
@@ -528,16 +475,13 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             all_existing_names = other_zone_names | current_zone_names
 
-            # Validate TRV entity exists
             if not self.hass.states.get(trv_entity):
                 errors["base"] = "invalid_trv"
-            # Check if TRV already used in another room (excluding current room if editing)
             elif any(
                 idx != self._reconfigure_room_index and r[CONF_TRV_ENTITY] == trv_entity
                 for idx, r in enumerate(self._current_rooms)
             ):
                 errors["base"] = "duplicate_trv"
-            # Check room name uniqueness across all zones
             elif room_name in all_existing_names:
                 errors["base"] = "duplicate_room_name"
             else:
@@ -550,15 +494,12 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }
 
                 if self._reconfigure_room_index is not None:
-                    # Edit existing room
                     self._current_rooms[self._reconfigure_room_index] = room
                 else:
-                    # Add new room
                     self._current_rooms.append(room)
 
                 return await self.async_step_reconfigure_zone_menu()
 
-        # Get current values if editing
         current_room = (
             self._current_rooms[self._reconfigure_room_index]
             if self._reconfigure_room_index is not None
@@ -620,24 +561,18 @@ class ZonalHeatingOptionsFlow(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Manage the options."""
         if user_input is not None:
-            # Save settings to options
             return self.async_create_entry(
                 title="",
                 data={
                     CONF_TEMP_DIFFERENTIAL: user_input[CONF_TEMP_DIFFERENTIAL],
-                    CONF_OVERHEAT_THRESHOLD: user_input[CONF_OVERHEAT_THRESHOLD],
                     CONF_MIN_CYCLE_TIME: user_input[CONF_MIN_CYCLE_TIME],
                     CONF_WINDOW_DELAY: user_input[CONF_WINDOW_DELAY],
-                    CONF_PERSON_ENTITIES: user_input.get(CONF_PERSON_ENTITIES, []),
-                    CONF_AWAY_TEMPERATURE: user_input[CONF_AWAY_TEMPERATURE],
-                    CONF_AWAY_MODE_DELAY: user_input[CONF_AWAY_MODE_DELAY],
                     CONF_CALIBRATION_SYNC: user_input.get(
                         CONF_CALIBRATION_SYNC, DEFAULT_CALIBRATION_SYNC
                     ),
                 },
             )
 
-        # Get current settings from options (fallback to data for backwards compatibility)
         current_settings = (
             self.config_entry.options
             if self.config_entry.options
@@ -655,12 +590,6 @@ class ZonalHeatingOptionsFlow(config_entries.OptionsFlow):
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=5.0)),
                     vol.Optional(
-                        CONF_OVERHEAT_THRESHOLD,
-                        default=current_settings.get(
-                            CONF_OVERHEAT_THRESHOLD, DEFAULT_OVERHEAT_THRESHOLD
-                        ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0.5, max=5.0)),
-                    vol.Optional(
                         CONF_MIN_CYCLE_TIME,
                         default=current_settings.get(
                             CONF_MIN_CYCLE_TIME, DEFAULT_MIN_CYCLE_TIME
@@ -672,27 +601,6 @@ class ZonalHeatingOptionsFlow(config_entries.OptionsFlow):
                             CONF_WINDOW_DELAY, DEFAULT_WINDOW_DELAY
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=300)),
-                    vol.Optional(
-                        CONF_PERSON_ENTITIES,
-                        default=current_settings.get(CONF_PERSON_ENTITIES, []),
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain=PERSON_DOMAIN,
-                            multiple=True,
-                        )
-                    ),
-                    vol.Optional(
-                        CONF_AWAY_TEMPERATURE,
-                        default=current_settings.get(
-                            CONF_AWAY_TEMPERATURE, DEFAULT_AWAY_TEMPERATURE
-                        ),
-                    ): vol.All(vol.Coerce(float), vol.Range(min=5.0, max=25.0)),
-                    vol.Optional(
-                        CONF_AWAY_MODE_DELAY,
-                        default=current_settings.get(
-                            CONF_AWAY_MODE_DELAY, DEFAULT_AWAY_MODE_DELAY
-                        ),
-                    ): vol.All(vol.Coerce(int), vol.Range(min=0, max=120)),
                     vol.Optional(
                         CONF_CALIBRATION_SYNC,
                         default=current_settings.get(

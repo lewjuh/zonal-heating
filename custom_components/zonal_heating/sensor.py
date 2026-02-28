@@ -34,7 +34,6 @@ async def async_setup_entry(
     for zone_idx, zone in enumerate(zones):
         zone_name = zone.get("name", f"Zone {zone_idx}")
 
-        # Create zone diagnostic sensor
         entities.append(
             ZoneDiagnosticSensor(
                 hass=hass,
@@ -43,7 +42,6 @@ async def async_setup_entry(
             )
         )
 
-        # Create room diagnostic sensors
         for room_idx, room in enumerate(zone.get(CONF_ROOMS, [])):
             room_name = room.get("name", f"Room {room_idx}")
             entities.append(
@@ -108,7 +106,6 @@ class ZoneDiagnosticSensor(SensorEntity):
             timedelta(seconds=UPDATE_INTERVAL),
         )
 
-        # Initial update
         self._update_state()
 
     async def async_will_remove_from_hass(self) -> None:
@@ -138,12 +135,7 @@ class ZoneDiagnosticSensor(SensorEntity):
             self._attr_native_value = "unavailable"
             return
 
-        # Determine primary state
-        if coordinator.away_mode and not coordinator.away_mode_timer_active:
-            self._attr_native_value = "away_mode"
-        elif coordinator.away_mode_pending:
-            self._attr_native_value = "away_pending"
-        elif coordinator.zone_is_on:
+        if coordinator.zone_is_on:
             self._attr_native_value = "heating"
         else:
             self._attr_native_value = "idle"
@@ -160,7 +152,6 @@ class ZoneDiagnosticSensor(SensorEntity):
         if not coordinator:
             return {"error": "Zone coordinator not found"}
 
-        # Calculate time since last change
         time_since_change = None
         time_until_cycle_allowed = None
         cycle_time_blocking = False
@@ -173,15 +164,10 @@ class ZoneDiagnosticSensor(SensorEntity):
                 time_until_cycle_allowed = round(coordinator.min_cycle_time - elapsed, 1)
                 cycle_time_blocking = True
 
-        # Get schedulers for schedule info
-        schedulers = self.hass.data[DOMAIN][self._entry_id].get("schedulers", {})
-
-        # Count rooms needing heat
         rooms_needing_heat = []
         rooms_not_needing_heat = []
 
         for room in coordinator.rooms:
-            scheduler = schedulers.get(room.room_name)
             room_info = {
                 "name": room.room_name,
                 "needs_heat": room.needs_heat,
@@ -191,8 +177,6 @@ class ZoneDiagnosticSensor(SensorEntity):
                 "is_on": room.is_on,
                 "window_open": room.window_open,
                 "window_confirmed": room.window_open_confirmed,
-                "overheated": room.overheated,
-                "schedule_enabled": scheduler.schedule_enabled if scheduler else False,
             }
 
             if room.needs_heat and room.temperature_deficit > 0:
@@ -200,10 +184,8 @@ class ZoneDiagnosticSensor(SensorEntity):
             else:
                 rooms_not_needing_heat.append(room_info)
 
-        # Build reason explanation
         reason = self._build_reason(coordinator, rooms_needing_heat, cycle_time_blocking)
 
-        # Check if in startup grace period
         in_startup_grace = coordinator.in_startup_grace_period
 
         attrs = {
@@ -219,11 +201,6 @@ class ZoneDiagnosticSensor(SensorEntity):
             "rooms_total": len(coordinator.rooms),
             "rooms_needing_heat_count": len(rooms_needing_heat),
             "rooms_needing_heat": [r["name"] for r in rooms_needing_heat],
-            "away_mode": coordinator.away_mode,
-            "away_mode_pending": coordinator.away_mode_pending,
-            "away_mode_delay": coordinator.away_mode_delay,
-            "people_home": coordinator.people_home_count,
-            "people_tracked": len(coordinator.person_entities),
             "reason": reason,
             "detailed_rooms": rooms_needing_heat + rooms_not_needing_heat,
         }
@@ -232,12 +209,6 @@ class ZoneDiagnosticSensor(SensorEntity):
 
     def _build_reason(self, coordinator, rooms_needing_heat: list, cycle_blocking: bool) -> str:
         """Build a human-readable reason for current state."""
-        if coordinator.away_mode and not coordinator.away_mode_timer_active:
-            return "Away mode active - all people away"
-
-        if coordinator.away_mode_pending:
-            return f"Away mode pending - waiting {coordinator.away_mode_delay} minute delay"
-
         if not rooms_needing_heat:
             return "No rooms need heat - all at or above target temperature"
 
@@ -248,7 +219,6 @@ class ZoneDiagnosticSensor(SensorEntity):
         if cycle_blocking:
             return f"Would turn on but min_cycle_time blocking ({coordinator.min_cycle_time} min cooldown)"
 
-        # Zone should be on but isn't
         return f"Zone OFF but {len(rooms_needing_heat)} room(s) requesting heat - check zone thermostat"
 
 
@@ -335,10 +305,7 @@ class RoomDiagnosticSensor(SensorEntity):
             self._attr_native_value = "unavailable"
             return
 
-        # Determine primary state
-        if room.overheated:
-            self._attr_native_value = "overheated"
-        elif room.window_open_confirmed:
+        if room.window_open_confirmed:
             self._attr_native_value = "window_open"
         elif room.needs_heat:
             self._attr_native_value = "needs_heat"
@@ -359,7 +326,6 @@ class RoomDiagnosticSensor(SensorEntity):
         if not room:
             return {"error": "Room state machine not found"}
 
-        # Build reason explanation
         reason = self._build_reason(room)
 
         attrs = {
@@ -369,20 +335,16 @@ class RoomDiagnosticSensor(SensorEntity):
             "current_temp": room.current_temperature,
             "target_temp": room.target_temperature,
             "temp_differential": room.temp_differential,
-            "overheat_threshold": room.overheat_threshold,
             "temperature_deficit": round(room.temperature_deficit, 2) if room.temperature_deficit else 0,
             "needs_heat": room.needs_heat,
             "is_on": room.is_on,
             "window_open": room.window_open,
             "window_open_confirmed": room.window_open_confirmed,
             "window_timer_active": room.window_timer_active,
-            "overheated": room.overheated,
             "reason": reason,
         }
 
-        # Add overheat limit calculation
         if room.target_temperature is not None:
-            attrs["overheat_limit"] = round(room.target_temperature + room.overheat_threshold, 1)
             attrs["heat_threshold"] = round(room.target_temperature - room.temp_differential, 1)
 
         return attrs
@@ -391,10 +353,6 @@ class RoomDiagnosticSensor(SensorEntity):
         """Build a human-readable reason for current state."""
         if not room.is_on:
             return "Climate entity is OFF"
-
-        if room.overheated:
-            overheat_limit = room.target_temperature + room.overheat_threshold
-            return f"Overheated - current {room.current_temperature:.1f}C >= limit {overheat_limit:.1f}C"
 
         if room.window_open_confirmed:
             return "Window confirmed open - heating paused"

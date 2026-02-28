@@ -5,19 +5,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import voluptuous as vol
-
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.core import HomeAssistant
 
 from .const import (
-    CONF_AWAY_MODE_DELAY,
-    CONF_AWAY_TEMPERATURE,
     CONF_CALIBRATION_SYNC,
     CONF_MIN_CYCLE_TIME,
-    CONF_OVERHEAT_THRESHOLD,
-    CONF_PERSON_ENTITIES,
     CONF_ROOMS,
     CONF_SETTINGS,
     CONF_TEMP_DIFFERENTIAL,
@@ -27,18 +21,14 @@ from .const import (
     CONF_WINDOW_SENSORS,
     CONF_ZONE_THERMOSTAT,
     CONF_ZONES,
-    DEFAULT_AWAY_MODE_DELAY,
-    DEFAULT_AWAY_TEMPERATURE,
     DEFAULT_CALIBRATION_SYNC,
     DEFAULT_MIN_CYCLE_TIME,
-    DEFAULT_OVERHEAT_THRESHOLD,
     DEFAULT_TEMP_DIFFERENTIAL,
     DEFAULT_WINDOW_DELAY,
     DOMAIN,
     PLATFORMS,
 )
 from .room_state_machine import RoomStateMachine
-from .scheduler import RoomScheduler
 from .storage import ZonalHeatingStorage
 from .zone_state_machine import ZoneStateMachine
 
@@ -60,7 +50,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
         "coordinators": {},
-        "schedulers": {},
         "storage": storage,
     }
 
@@ -69,9 +58,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Now set up zone coordinators after entities are created
     await _async_setup_coordinators(hass, entry)
-
-    # Register services
-    await _async_register_services(hass, entry)
 
     # Register options update listener
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
@@ -97,25 +83,18 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
     else:
         settings = entry.data.get(CONF_SETTINGS, {})
 
-    # Get storage instance
     storage = hass.data[DOMAIN][entry.entry_id]["storage"]
-
     coordinators = hass.data[DOMAIN][entry.entry_id]["coordinators"]
 
     window_delay = settings.get(CONF_WINDOW_DELAY, DEFAULT_WINDOW_DELAY)
     min_cycle_time = settings.get(CONF_MIN_CYCLE_TIME, DEFAULT_MIN_CYCLE_TIME)
     temp_differential = settings.get(CONF_TEMP_DIFFERENTIAL, DEFAULT_TEMP_DIFFERENTIAL)
-    overheat_threshold = settings.get(CONF_OVERHEAT_THRESHOLD, DEFAULT_OVERHEAT_THRESHOLD)
-    person_entities = settings.get(CONF_PERSON_ENTITIES, [])
-    away_temperature = settings.get(CONF_AWAY_TEMPERATURE, DEFAULT_AWAY_TEMPERATURE)
-    away_mode_delay = settings.get(CONF_AWAY_MODE_DELAY, DEFAULT_AWAY_MODE_DELAY)
     calibration_sync = settings.get(CONF_CALIBRATION_SYNC, DEFAULT_CALIBRATION_SYNC)
 
     for zone_idx, zone in enumerate(zones):
         zone_name = zone.get("name", f"Zone {zone_idx}")
         zone_climate = zone.get(CONF_ZONE_THERMOSTAT)
 
-        # Create room state machines for this zone
         room_state_machines = []
         for room in zone.get(CONF_ROOMS, []):
             room_name = room.get("name", "")
@@ -134,22 +113,11 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
                 window_sensors=window_sensors,
                 window_delay=window_delay,
                 temp_differential=temp_differential,
-                overheat_threshold=overheat_threshold,
                 temp_sensor=temp_sensor,
                 calibration_sync=calibration_sync,
                 storage=storage,
             )
             room_state_machines.append(room_sm)
-
-            # Create scheduler for this room
-            scheduler = RoomScheduler(
-                hass=hass,
-                room_name=room_name,
-                room_state_machine=room_sm,
-                storage=storage,
-            )
-            room_sm.set_scheduler(scheduler)
-            hass.data[DOMAIN][entry.entry_id]["schedulers"][room_name] = scheduler
 
         if not room_state_machines:
             _LOGGER.warning(
@@ -158,16 +126,12 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
             )
             continue
 
-        # Create and start zone state machine
         zone_sm = ZoneStateMachine(
             hass=hass,
             zone_name=zone_name,
             zone_climate=zone_climate,
             rooms=room_state_machines,
             min_cycle_time=min_cycle_time,
-            person_entities=person_entities,
-            away_temperature=away_temperature,
-            away_mode_delay=away_mode_delay,
             storage=storage,
         )
 
@@ -181,18 +145,6 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
             continue
 
         coordinators[zone_name] = zone_sm
-
-        # Start schedulers for rooms in this zone
-        schedulers = hass.data[DOMAIN][entry.entry_id]["schedulers"]
-        for room_sm in room_state_machines:
-            if room_sm.room_name in schedulers:
-                try:
-                    await schedulers[room_sm.room_name].async_start()
-                except Exception:
-                    _LOGGER.exception(
-                        "Failed to start scheduler for room %s",
-                        room_sm.room_name,
-                    )
 
         _LOGGER.info("Started zone state machine for: %s", zone_name)
 
@@ -219,11 +171,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.debug("Unloading zonal_heating integration for entry %s", entry.entry_id)
 
-    # Stop all schedulers
-    schedulers = hass.data[DOMAIN][entry.entry_id].get("schedulers", {})
-    for scheduler in schedulers.values():
-        await scheduler.async_stop()
-
     # Stop all coordinators (this triggers state save in each state machine)
     coordinators = hass.data[DOMAIN][entry.entry_id]["coordinators"]
     for coordinator in coordinators.values():
@@ -239,205 +186,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         hass.data[DOMAIN].pop(entry.entry_id)
 
-        remaining = {k for k in hass.data.get(DOMAIN, {}) if k != "card_registered"}
-        if not remaining:
-            for service_name in (
-                "set_room_schedule",
-                "get_room_schedule",
-                "delete_room_schedule",
-                "add_schedule_point",
-                "remove_schedule_point",
-            ):
-                hass.services.async_remove(DOMAIN, service_name)
-
         _LOGGER.info(
             "Zonal heating integration unloaded successfully for entry %s",
             entry.entry_id,
         )
 
     return unload_ok
-
-
-async def _async_register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Register zonal heating services."""
-    if hass.services.has_service(DOMAIN, "set_room_schedule"):
-        return
-
-    def _find_scheduler(room_name: str) -> RoomScheduler | None:
-        """Find the scheduler for a room across all entries."""
-        for eid, data in hass.data.get(DOMAIN, {}).items():
-            if isinstance(data, dict) and "schedulers" in data:
-                if room_name in data["schedulers"]:
-                    return data["schedulers"][room_name]
-        return None
-
-    def _find_storage(room_name: str) -> ZonalHeatingStorage | None:
-        """Find the storage instance for a room."""
-        for eid, data in hass.data.get(DOMAIN, {}).items():
-            if isinstance(data, dict) and "schedulers" in data:
-                if room_name in data["schedulers"]:
-                    return data.get("storage")
-        return None
-
-    async def handle_set_room_schedule(call: ServiceCall) -> None:
-        """Handle set_room_schedule service call."""
-        room_name = call.data["room_name"]
-
-        storage = _find_storage(room_name)
-        if not storage:
-            _LOGGER.error("set_room_schedule: Room '%s' not found", room_name)
-            return
-
-        schedule = {
-            "enabled": call.data.get("enabled", True),
-            "weekday": call.data.get("weekday", []),
-            "weekend": call.data.get("weekend", []),
-        }
-
-        storage.set_room_schedule(room_name, schedule)
-        await storage.async_save()
-
-        scheduler = _find_scheduler(room_name)
-        if scheduler:
-            await scheduler.async_reload_schedule()
-
-        _LOGGER.info("Set schedule for room '%s'", room_name)
-
-    async def handle_get_room_schedule(call: ServiceCall) -> dict:
-        """Handle get_room_schedule service call."""
-        room_name = call.data["room_name"]
-
-        storage = _find_storage(room_name)
-        if not storage:
-            return {"error": f"Room '{room_name}' not found"}
-
-        schedule = storage.get_room_schedule(room_name)
-        if schedule:
-            return {"room_name": room_name, **schedule}
-        return {"room_name": room_name, "enabled": False, "weekday": [], "weekend": []}
-
-    async def handle_delete_room_schedule(call: ServiceCall) -> None:
-        """Handle delete_room_schedule service call."""
-        room_name = call.data["room_name"]
-
-        storage = _find_storage(room_name)
-        if not storage:
-            _LOGGER.error("delete_room_schedule: Room '%s' not found", room_name)
-            return
-
-        storage.delete_room_schedule(room_name)
-        await storage.async_save()
-
-        scheduler = _find_scheduler(room_name)
-        if scheduler:
-            await scheduler.async_reload_schedule()
-
-        _LOGGER.info("Deleted schedule for room '%s'", room_name)
-
-    async def handle_add_schedule_point(call: ServiceCall) -> None:
-        """Handle add_schedule_point service call."""
-        room_name = call.data["room_name"]
-        timeline = call.data["timeline"]
-        time = call.data["time"]
-        temperature = call.data["temperature"]
-
-        storage = _find_storage(room_name)
-        if not storage:
-            _LOGGER.error("add_schedule_point: Room '%s' not found", room_name)
-            return
-
-        schedule = storage.get_room_schedule(room_name) or {
-            "enabled": True,
-            "weekday": [],
-            "weekend": [],
-        }
-
-        points = schedule.get(timeline, [])
-        points = [p for p in points if p.get("time") != time]
-        points.append({"time": time, "temperature": float(temperature)})
-        schedule[timeline] = points
-
-        storage.set_room_schedule(room_name, schedule)
-        await storage.async_save()
-
-        scheduler = _find_scheduler(room_name)
-        if scheduler:
-            await scheduler.async_reload_schedule()
-
-        _LOGGER.info("Added schedule point for room '%s': %s at %s", room_name, temperature, time)
-
-    async def handle_remove_schedule_point(call: ServiceCall) -> None:
-        """Handle remove_schedule_point service call."""
-        room_name = call.data["room_name"]
-        timeline = call.data["timeline"]
-        time = call.data["time"]
-
-        storage = _find_storage(room_name)
-        if not storage:
-            _LOGGER.error("remove_schedule_point: Room '%s' not found", room_name)
-            return
-
-        schedule = storage.get_room_schedule(room_name)
-        if not schedule:
-            _LOGGER.warning("remove_schedule_point: No schedule for room '%s'", room_name)
-            return
-
-        points = schedule.get(timeline, [])
-        schedule[timeline] = [p for p in points if p.get("time") != time]
-
-        storage.set_room_schedule(room_name, schedule)
-        await storage.async_save()
-
-        scheduler = _find_scheduler(room_name)
-        if scheduler:
-            await scheduler.async_reload_schedule()
-
-        _LOGGER.info("Removed schedule point for room '%s' at %s", room_name, time)
-
-    set_schedule_schema = vol.Schema({
-        vol.Required("room_name"): str,
-        vol.Optional("enabled", default=True): bool,
-        vol.Optional("weekday", default=[]): list,
-        vol.Optional("weekend", default=[]): list,
-    })
-    get_schedule_schema = vol.Schema({
-        vol.Required("room_name"): str,
-    })
-    delete_schedule_schema = vol.Schema({
-        vol.Required("room_name"): str,
-    })
-    add_point_schema = vol.Schema({
-        vol.Required("room_name"): str,
-        vol.Required("timeline"): vol.In(["weekday", "weekend"]),
-        vol.Required("time"): str,
-        vol.Required("temperature"): vol.Coerce(float),
-    })
-    remove_point_schema = vol.Schema({
-        vol.Required("room_name"): str,
-        vol.Required("timeline"): vol.In(["weekday", "weekend"]),
-        vol.Required("time"): str,
-    })
-
-    hass.services.async_register(
-        DOMAIN, "set_room_schedule", handle_set_room_schedule,
-        schema=set_schedule_schema,
-    )
-    hass.services.async_register(
-        DOMAIN, "get_room_schedule", handle_get_room_schedule,
-        schema=get_schedule_schema,
-        supports_response=SupportsResponse.ONLY,
-    )
-    hass.services.async_register(
-        DOMAIN, "delete_room_schedule", handle_delete_room_schedule,
-        schema=delete_schedule_schema,
-    )
-    hass.services.async_register(
-        DOMAIN, "add_schedule_point", handle_add_schedule_point,
-        schema=add_point_schema,
-    )
-    hass.services.async_register(
-        DOMAIN, "remove_schedule_point", handle_remove_schedule_point,
-        schema=remove_point_schema,
-    )
-
-    _LOGGER.info("Registered zonal_heating schedule services")
