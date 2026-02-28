@@ -761,8 +761,12 @@ class ZonalHeatingCardEditor extends LitElement {
   }
 }
 
-customElements.define("zonal-heating-card", ZonalHeatingCard);
-customElements.define("zonal-heating-card-editor", ZonalHeatingCardEditor);
+if (!customElements.get("zonal-heating-card")) {
+  customElements.define("zonal-heating-card", ZonalHeatingCard);
+}
+if (!customElements.get("zonal-heating-card-editor")) {
+  customElements.define("zonal-heating-card-editor", ZonalHeatingCardEditor);
+}
 
 window.customCards = window.customCards || [];
 window.customCards.push({

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -158,13 +159,20 @@ async def _async_register_card(hass: HomeAssistant) -> None:
     hass.data[DOMAIN]["card_registered"] = True
 
     www_path = Path(__file__).parent / "www"
+    card_file = www_path / "zonal-heating-card.js"
     card_url = f"/{DOMAIN}/zonal-heating-card.js"
 
     await hass.http.async_register_static_paths(
-        [StaticPathConfig(card_url, str(www_path / "zonal-heating-card.js"), cache_headers=False)]
+        [StaticPathConfig(card_url, str(card_file), cache_headers=False)]
     )
 
-    _LOGGER.info("Registered zonal-heating-card at %s (cache disabled)", card_url)
+    # Register with Lovelace frontend using file mtime for cache-busting
+    version = str(int(card_file.stat().st_mtime))
+    add_extra_js_url(hass, f"{card_url}?v={version}")
+
+    _LOGGER.info(
+        "Registered zonal-heating-card at %s (v=%s)", card_url, version
+    )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

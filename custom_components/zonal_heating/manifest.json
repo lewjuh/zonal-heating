@@ -3,7 +3,7 @@
   "name": "Zonal Heating",
   "codeowners": ["@lewjuh"],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["frontend", "http"],
   "documentation": "https://github.com/lewjuh/zonal-heating",
   "integration_type": "hub",
   "iot_class": "calculated",
