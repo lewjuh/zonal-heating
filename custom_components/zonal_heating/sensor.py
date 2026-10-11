@@ -10,6 +10,7 @@ from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
@@ -22,6 +23,41 @@ _LOGGER = logging.getLogger(__name__)
 UPDATE_INTERVAL = 30  # seconds
 
 
+def _slug(name: str) -> str:
+    return name.lower().replace(" ", "_")
+
+
+def _zone_unique_id(entry_id: str, zone_name: str) -> str:
+    return f"{entry_id}_zone_{_slug(zone_name)}_diagnostic"
+
+
+def _room_unique_id(entry_id: str, room_name: str) -> str:
+    return f"{entry_id}_{_slug(room_name)}_diagnostic"
+
+
+@callback
+def _async_migrate_zone_unique_ids(
+    hass: HomeAssistant, entry: ConfigEntry, zones: list[dict]
+) -> None:
+    """Move zone sensors off the old unique ID format, which could clash with room sensors."""
+    registry = er.async_get(hass)
+    room_slugs = {
+        _slug(room.get("name", ""))
+        for zone in zones
+        for room in zone.get(CONF_ROOMS, [])
+    }
+    for zone in zones:
+        zone_name = zone.get("name", "")
+        if _slug(zone_name) in room_slugs:
+            continue
+        old_unique_id = _room_unique_id(entry.entry_id, zone_name)
+        new_unique_id = _zone_unique_id(entry.entry_id, zone_name)
+        entity_id = registry.async_get_entity_id("sensor", DOMAIN, old_unique_id)
+        if entity_id and not registry.async_get_entity_id("sensor", DOMAIN, new_unique_id):
+            registry.async_update_entity(entity_id, new_unique_id=new_unique_id)
+            _LOGGER.info("Migrated %s to unique ID %s", entity_id, new_unique_id)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -29,6 +65,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up zonal heating diagnostic sensors from a config entry."""
     zones = entry.data.get(CONF_ZONES, [])
+    _async_migrate_zone_unique_ids(hass, entry, zones)
 
     entities = []
     for zone_idx, zone in enumerate(zones):
@@ -80,8 +117,8 @@ class ZoneDiagnosticSensor(SensorEntity):
         self._entry_id = entry_id
         self._zone_name = zone_name
 
-        self._attr_unique_id = f"{entry_id}_{zone_name.lower().replace(' ', '_')}_diagnostic"
-        self._attr_name = f"Zonal Heating {zone_name} Status"
+        self._attr_unique_id = _zone_unique_id(entry_id, zone_name)
+        self._attr_name = "Status"
 
         self._unsub_update = None
 
@@ -243,8 +280,8 @@ class RoomDiagnosticSensor(SensorEntity):
         self._zone_name = zone_name
         self._room_name = room_name
 
-        self._attr_unique_id = f"{entry_id}_{room_name.lower().replace(' ', '_')}_diagnostic"
-        self._attr_name = f"Zonal Heating {room_name} Status"
+        self._attr_unique_id = _room_unique_id(entry_id, room_name)
+        self._attr_name = f"{room_name} Status"
 
         self._unsub_update = None
 
@@ -363,8 +400,13 @@ class RoomDiagnosticSensor(SensorEntity):
         if room.current_temperature is None or room.target_temperature is None:
             return "Missing temperature data"
 
-        threshold = room.target_temperature - room.temp_differential
-        if room.current_temperature < threshold:
-            return f"Needs heat - current {room.current_temperature:.1f}C < threshold {threshold:.1f}C"
+        if room.needs_heat:
+            return (
+                f"Needs heat - current {room.current_temperature:.1f}C, "
+                f"heating until {room.target_temperature:.1f}C"
+            )
 
-        return f"Satisfied - current {room.current_temperature:.1f}C >= threshold {threshold:.1f}C"
+        return (
+            f"Satisfied - current {room.current_temperature:.1f}C, "
+            f"heat starts below {room.heat_threshold:.1f}C"
+        )

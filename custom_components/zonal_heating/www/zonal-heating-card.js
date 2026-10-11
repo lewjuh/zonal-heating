@@ -600,7 +600,7 @@ class ZonalHeatingCard extends LitElement {
     if (room.window_open) return "Window detected - confirming...";
     if (room.needs_heat) {
       const deficit = room.deficit || 0;
-      return `${deficit.toFixed(1)}° below heating threshold`;
+      return `${deficit.toFixed(1)}° below target`;
     }
     return "Temperature at or above target";
   }

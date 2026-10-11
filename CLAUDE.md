@@ -46,9 +46,9 @@ ConfigFlow -> __init__.py -> Climate Entities (UI layer)
 Only **4 paths** write to TRVs:
 
 1. **User sets temperature** via virtual entity -> forwards to TRV (`climate.py`)
-2. **Startup sync** pushes restored target to TRV (`climate.py`)
+2. **Startup sync** pushes restored target and on/off mode to TRV; a TRV in `auto` or another active mode is not forced to `heat` (`climate.py`)
 3. **Calibration sync** writes external temp/offset to TRV number entity (`room_state_machine.py`) - not a target temp write
-4. **Zone thermostat** gets set to current+5 when turning on (`zone_state_machine.py`)
+4. **Zone thermostat** gets set to heat at current+5, capped at its `max_temp`, when turning on (`zone_state_machine.py`)
 
 ### Key Design Decisions
 
@@ -82,6 +82,15 @@ logger:
     custom_components.zonal_heating: debug
 ```
 
+### Tests
+
+```bash
+pip install -r requirements_test.txt
+pytest -q
+```
+
+Tests use `pytest-homeassistant-custom-component` and run in CI (`.github/workflows/validate.yaml`).
+
 ### HACS Validation
 
 ```bash
@@ -92,7 +101,7 @@ logger:
 **Critical HACS Requirements**:
 - `manifest.json` must include: `version`, `issue_tracker`, `documentation`
 - GitHub repo must have: description, topics (including `hacs`, `home-assistant`)
-- Minimum Home Assistant version: 2024.1.0 (specified in `hacs.json`)
+- Minimum Home Assistant version: 2024.11.0 (specified in `hacs.json`; needed for `_get_reconfigure_entry` and the argument-less `OptionsFlow`)
 
 ### Git Workflow
 
@@ -142,15 +151,16 @@ The `config_flow.py` implements a **multi-step wizard**:
 ## State Tracking & Attributes
 
 ### Room State Machine Properties
-- `needs_heat`: Boolean calculated from (current_temp < target_temp - differential) AND climate is on AND window not confirmed open
-- `temperature_deficit`: Used for priority sorting by zone coordinator
+- `needs_heat`: Latched with hysteresis. Starts when current_temp < target_temp - differential, holds until current_temp >= target_temp. Always false when the climate is off, the TRV is unavailable, or a window is confirmed open
+- `temperature_deficit`: Used for sorting rooms in logs and diagnostics by the zone coordinator
 - `window_open_confirmed`: Only true after delay timer expires
 
 ### Zone State Machine Logic
 - Evaluates on any room climate state change
 - Turns zone ON if any room `needs_heat` with `temperature_deficit > 0`
 - Respects `min_cycle_time` and schedules automatic retry when blocked
-- Sets zone temp to `current + 5C` when turning on (ensures boiler triggers)
+- Turns on with a single `climate.set_temperature` call carrying `hvac_mode: heat` and target `current + 5C` capped at `max_temp`
+- Any mode other than `off` counts as on when deciding whether to turn the zone off
 
 ## Common Issues & Solutions
 

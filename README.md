@@ -14,7 +14,7 @@ The integration coordinates your zone thermostat (boiler) with individual room T
 
 1. You set a target temperature on a room via the virtual climate entity
 2. The integration forwards it to the physical TRV
-3. The room state machine monitors whether the room needs heat (current temp below target minus differential)
+3. The room state machine starts asking for heat when the room drops below target minus differential, and keeps asking until it reaches target
 4. The zone state machine watches all rooms -- if any room needs heat, it turns on the zone thermostat
 5. When all rooms are satisfied, the zone thermostat turns off
 
@@ -26,10 +26,9 @@ That's it. Four temperature write points, one clear control flow.
 - **Room-Level Control** -- individual TRV management for each room
 - **Window Detection** -- heating demand suppressed when windows are open (with configurable delay to avoid false triggers)
 - **Smart Cycling** -- prevents rapid boiler on/off with configurable minimum cycle time
-- **Temperature Differential** -- fine-tune when heating activates based on temperature drop below target
+- **Temperature Differential** -- how far below target a room must drop before heating restarts (hysteresis, so the boiler does not chatter around the target)
 - **External Temperature Sensors** -- use a separate sensor for more accurate room readings
 - **Calibration Sync** -- sync external sensor readings to TRV via calibration offset or direct input
-- **MQTT Direct Control** -- automatic Zigbee2MQTT detection for more reliable TRV communication
 - **Diagnostic Sensors** -- detailed sensors for monitoring and debugging
 - **Custom Dashboard Card** -- built-in Lovelace card for visual heating status
 - **UI Configuration** -- fully configurable through the Home Assistant UI with step-by-step setup
@@ -72,13 +71,13 @@ For each room in the zone:
 - Select the TRV climate entity for that room
 - (Optional) Select an external temperature sensor for more accurate readings
 - (Optional) Select window/door sensors
-- Set the heating priority (1-10)
+- Set the heating priority (1-10). This is currently informational only: it is shown on the entity but does not change heating decisions
 
 ### Step 3: Global Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Temperature Differential | 0.25°C | How far below target before requesting heat |
+| Temperature Differential | 0.25°C | How far below target a room must drop before heat is requested again; once requesting, it continues until target is reached |
 | Minimum Cycle Time | 5 minutes | Minimum time between zone thermostat on/off changes |
 | Window Open Delay | 30 seconds | Wait time before suppressing heat when window opens |
 | Calibration Sync | Off | Sync external sensor temperature to TRV calibration |
@@ -96,12 +95,13 @@ The zone monitors all its rooms and:
 - Turns the zone thermostat **off** when no rooms need heat
 - Prevents rapid cycling with a minimum cycle time between state changes
 - Automatically retries when blocked by the cycle timer
-- Sets the zone thermostat target to current + 5°C when turning on (ensures the boiler fires)
+- Turns the zone thermostat on in `heat` mode with a target of current + 5°C, capped at the thermostat's maximum (ensures the boiler fires)
+- Treats any active mode other than `off` (e.g. `auto`) as on, and switches it off when no rooms need heat
 
 ### Room State Machine
 
 Each room:
-- Reports `needs_heat` when current temperature is below target minus differential, the climate entity is on, and the window is not confirmed open
+- Starts reporting `needs_heat` when current temperature drops below target minus differential, and keeps reporting it until the room reaches target (as long as the climate entity is on and no window is confirmed open)
 - Monitors the TRV entity for temperature and state changes
 - Uses an external temperature sensor if configured (overrides the TRV's built-in sensor)
 - Handles window detection with a configurable delay to prevent false triggers from brief openings
@@ -123,7 +123,8 @@ When enabled with an external temperature sensor, the integration syncs the exte
 
 1. **Direct external temp input** -- sets the external sensor number entity on the TRV (e.g., Sonoff TRVZB)
 2. **Calibration offset** -- calculates and sets a local temperature calibration offset
-3. **MQTT direct** -- publishes the calibration offset directly via Zigbee2MQTT MQTT
+
+The offset is only recalculated once the TRV has reported a temperature taken after the previous offset was applied, so it does not overshoot.
 
 ## Reconfiguration
 
@@ -191,11 +192,11 @@ Entity: `sensor.zonal_heating_<zone_name>_status`
 
 ### Room Sensor
 
-Entity: `sensor.zonal_heating_<room_name>_status`
+Entity: `sensor.zonal_heating_<zone_name>_<room_name>_status` (installs from before v1.8 keep `sensor.zonal_heating_<room_name>_status`)
 
 **States:**
-- `needs_heat` -- room temperature is below heating threshold
-- `satisfied` -- temperature at or above threshold
+- `needs_heat` -- room is heating up to its target
+- `satisfied` -- room is at target, or within the differential below it
 - `window_open` -- window confirmed open, heat requests suppressed
 - `off` -- climate entity is off
 
@@ -204,7 +205,7 @@ Entity: `sensor.zonal_heating_<room_name>_status`
 - `target_temp` -- target temperature
 - `temp_differential` -- configured differential
 - `temperature_deficit` -- degrees below target
-- `heat_threshold` -- temperature below which heating activates
+- `heat_threshold` -- temperature below which heating starts again
 - `reason` -- human-readable explanation of current state
 
 ## Example Setup
@@ -225,7 +226,7 @@ Entity: `sensor.zonal_heating_<room_name>_status`
 
 ## Requirements
 
-- Home Assistant 2024.1.0 or newer
+- Home Assistant 2024.11.0 or newer
 - Climate entities for zone thermostats
 - Climate entities for TRVs
 - (Optional) Temperature sensor entities for more accurate room readings
@@ -241,7 +242,6 @@ Entity: `sensor.zonal_heating_<room_name>_status`
 
 ### TRV not responding
 - Check the TRV entity is available in Home Assistant
-- If using Zigbee2MQTT, the integration should auto-detect and use direct MQTT control
 - Check logs for "Failed to set TRV target temperature" messages
 
 ### Window detection not working

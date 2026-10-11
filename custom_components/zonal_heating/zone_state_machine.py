@@ -7,12 +7,20 @@ import logging
 from typing import TYPE_CHECKING
 
 from homeassistant.components.climate import (
+    ATTR_HVAC_MODE,
+    ATTR_MAX_TEMP,
+    ATTR_MIN_TEMP,
     DOMAIN as CLIMATE_DOMAIN,
     SERVICE_SET_HVAC_MODE,
     SERVICE_SET_TEMPERATURE,
     HVACMode,
 )
-from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE
+from homeassistant.const import (
+    ATTR_ENTITY_ID,
+    ATTR_TEMPERATURE,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+)
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
@@ -27,6 +35,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 STARTUP_GRACE_PERIOD = 120  # Seconds to ignore min_cycle_time after startup
+ZONE_BOOST = 5.0  # Degrees above current zone temperature when calling for heat
 
 
 class ZoneStateMachine:
@@ -431,11 +440,20 @@ class ZoneStateMachine:
             )
             return
 
-        zone_temp = zone_state.attributes.get("current_temperature")
         zone_hvac = zone_state.state
+        if zone_hvac in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            _LOGGER.warning(
+                "%s: Zone climate %s is %s, cannot change it",
+                self.zone_name,
+                self.zone_climate,
+                zone_hvac,
+            )
+            return
+
+        zone_temp = zone_state.attributes.get("current_temperature")
 
         needs_change = (turn_on and zone_hvac != HVACMode.HEAT) or (
-            not turn_on and zone_hvac == HVACMode.HEAT
+            not turn_on and zone_hvac != HVACMode.OFF
         )
 
         if not needs_change:
@@ -449,7 +467,7 @@ class ZoneStateMachine:
         _LOGGER.info(
             "%s: CHANGING ZONE CLIMATE %s -> %s",
             self.zone_name,
-            "ON" if zone_hvac == HVACMode.HEAT else "OFF",
+            zone_hvac,
             "ON" if turn_on else "OFF",
         )
         _LOGGER.info(
@@ -471,45 +489,38 @@ class ZoneStateMachine:
 
         try:
             if turn_on:
-                target_temp = (zone_temp + 5) if zone_temp is not None else 25
+                target_temp = self._boost_target(zone_state)
                 _LOGGER.info(
-                    "%s: Setting zone temperature: %.1f C -> %.1f C (current + 5 C)",
+                    "%s: Setting zone to heat at %.1f C (current %.1f C)",
                     self.zone_name,
-                    zone_temp or 0,
                     target_temp,
+                    zone_temp or 0,
                 )
-
                 await self.hass.services.async_call(
                     CLIMATE_DOMAIN,
                     SERVICE_SET_TEMPERATURE,
                     {
                         ATTR_ENTITY_ID: self.zone_climate,
                         ATTR_TEMPERATURE: target_temp,
+                        ATTR_HVAC_MODE: HVACMode.HEAT,
                     },
                     blocking=True,
                 )
             else:
-                _LOGGER.info(
-                    "%s: Turning OFF - no temperature change needed", self.zone_name
+                _LOGGER.info("%s: Setting HVAC mode to off", self.zone_name)
+                await self.hass.services.async_call(
+                    CLIMATE_DOMAIN,
+                    SERVICE_SET_HVAC_MODE,
+                    {
+                        ATTR_ENTITY_ID: self.zone_climate,
+                        ATTR_HVAC_MODE: HVACMode.OFF,
+                    },
+                    blocking=True,
                 )
-
-            _LOGGER.info(
-                "%s: Setting HVAC mode to %s",
-                self.zone_name,
-                HVACMode.HEAT if turn_on else HVACMode.OFF,
-            )
-            await self.hass.services.async_call(
-                CLIMATE_DOMAIN,
-                SERVICE_SET_HVAC_MODE,
-                {
-                    ATTR_ENTITY_ID: self.zone_climate,
-                    "hvac_mode": HVACMode.HEAT if turn_on else HVACMode.OFF,
-                },
-                blocking=True,
-            )
 
             self._zone_is_on = turn_on
             self._last_zone_change = dt_util.now()
+            self._schedule_save()
         except Exception:
             _LOGGER.exception(
                 "%s: Failed to change zone climate to %s - will retry on next evaluation",
@@ -525,6 +536,25 @@ class ZoneStateMachine:
             self.zone_name,
             "ON" if turn_on else "OFF",
         )
+
+    @staticmethod
+    def _boost_target(zone_state) -> float:
+        """Return a target high enough to make the zone call for heat, within its limits."""
+        attrs = zone_state.attributes
+        zone_temp = attrs.get("current_temperature")
+        max_temp = attrs.get(ATTR_MAX_TEMP)
+        min_temp = attrs.get(ATTR_MIN_TEMP)
+
+        if zone_temp is None:
+            target = max_temp if max_temp is not None else 25.0
+        else:
+            target = zone_temp + ZONE_BOOST
+
+        if max_temp is not None:
+            target = min(target, max_temp)
+        if min_temp is not None:
+            target = max(target, min_temp)
+        return target
 
     async def _async_restore_state(self) -> bool:
         """Restore state from persistent storage. Returns True if state was restored."""
@@ -560,6 +590,17 @@ class ZoneStateMachine:
         )
 
         return self._last_zone_change is not None
+
+    def _schedule_save(self) -> None:
+        """Write current state to storage soon, so a crash doesn't lose it."""
+        if self._storage is None:
+            return
+        self._storage.set_zone_state(
+            zone_name=self.zone_name,
+            zone_is_on=self._zone_is_on,
+            last_zone_change=self._last_zone_change,
+        )
+        self._storage.async_schedule_save()
 
     async def _async_save_state(self) -> None:
         """Save current state to persistent storage."""

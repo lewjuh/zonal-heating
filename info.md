@@ -7,7 +7,6 @@ Intelligent multi-zone heating control for Home Assistant with TRV management.
 ✅ **Multi-Zone Support** - Organize your home into heating zones
 ✅ **Smart TRV Control** - Individual radiator valve management per room
 ✅ **Window Detection** - Automatic heating pause when windows open
-✅ **Priority-Based Heating** - Set room priorities (1-10) for efficient heating
 ✅ **Anti-Cycling Protection** - Prevents rapid on/off switching
 ✅ **Easy Configuration** - Complete UI-based setup, no YAML required
 ✅ **Reconfigurable** - Edit zones and rooms anytime
@@ -33,21 +32,20 @@ After installation:
 - Optional window sensors for each room
 
 The integration coordinates everything to ensure:
-- High-priority rooms get heating when needed
-- Low-priority rooms benefit when heating is already on
+- The boiler runs only while at least one room is below its target
 - Windows open = heating paused automatically
 - No rapid on/off cycling that stresses your boiler
 
 ## Configuration Example
 
 **Ground Floor Zone:**
-- Living Room (Priority 10) ← Always gets heating when cold
-- Kitchen (Priority 8) ← High priority
-- Hallway (Priority 5) ← Opens TRV when heating is on
+- Living Room (TRV + external temperature sensor + window sensor)
+- Kitchen (TRV)
+- Hallway (TRV)
 
 ## Requirements
 
-- Home Assistant 2024.1.0+
+- Home Assistant 2024.11.0+
 - Climate entities for zone thermostats
 - Climate entities for TRVs
 - (Optional) Binary sensors for windows

@@ -12,9 +12,7 @@ rules:
   common-modules: done
   config-entry-unloading: done
   config-flow: done
-  config-flow-test-coverage:
-    status: exempt
-    comment: Tests not yet implemented for custom integration
+  config-flow-test-coverage: done
   dependency-transparency: done
   docs-actions:
     status: exempt
@@ -47,4 +45,4 @@ rules:
     comment: Integration validates entities exist during setup
   unique-config-entry:
     status: exempt
-    comment: Integration uses config flow validation to prevent duplicates
+    comment: Multiple entries are allowed; config flow rejects thermostats and TRVs already used by any entry

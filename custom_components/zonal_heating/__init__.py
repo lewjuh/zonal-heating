@@ -200,3 +200,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete persisted state when the config entry is removed."""
+    await ZonalHeatingStorage(hass, entry.entry_id).async_remove()

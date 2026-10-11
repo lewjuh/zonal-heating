@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any
 
@@ -43,6 +44,10 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _slug(name: str) -> str:
+    return name.strip().lower().replace(" ", "_")
+
+
 class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for zonal_heating."""
 
@@ -82,8 +87,15 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             zone_thermostat = user_input[CONF_ZONE_THERMOSTAT]
             if not self.hass.states.get(zone_thermostat):
                 errors["base"] = "invalid_thermostat"
-            elif zone_thermostat in [z[CONF_ZONE_THERMOSTAT] for z in self._zones]:
+            elif (
+                zone_thermostat in [z[CONF_ZONE_THERMOSTAT] for z in self._zones]
+                or zone_thermostat in self._other_entry_entities()[0]
+            ):
                 errors["base"] = "duplicate_zone_thermostat"
+            elif _slug(user_input[CONF_ZONE_NAME]) in {
+                _slug(z.get(CONF_ZONE_NAME, "")) for z in self._zones
+            }:
+                errors["base"] = "duplicate_zone_name"
             else:
                 self._current_zone = {
                     CONF_ZONE_NAME: user_input[CONF_ZONE_NAME],
@@ -105,17 +117,38 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    def _get_existing_room_names(self, exclude_name: str | None = None) -> set[str]:
-        """Collect all room names across all zones and current rooms."""
+    def _other_entry_entities(self) -> tuple[set[str], set[str]]:
+        """Return thermostats and TRVs used by other config entries of this integration."""
+        thermostats: set[str] = set()
+        trvs: set[str] = set()
+        for entry in self._async_current_entries(include_ignore=False):
+            if self._reconfigure_entry and entry.entry_id == self._reconfigure_entry.entry_id:
+                continue
+            for zone in entry.data.get(CONF_ZONES, []):
+                thermostats.add(zone.get(CONF_ZONE_THERMOSTAT))
+                trvs.update(r.get(CONF_TRV_ENTITY) for r in zone.get(CONF_ROOMS, []))
+        return thermostats, trvs
+
+    def _get_existing_room_names(self) -> set[str]:
+        """Collect all room name slugs across all zones and current rooms."""
         names: set[str] = set()
         for zone in self._zones:
             for room in zone.get(CONF_ROOMS, []):
-                names.add(room.get(CONF_NAME, ""))
+                names.add(_slug(room.get(CONF_NAME, "")))
         for room in self._current_rooms:
-            names.add(room.get(CONF_NAME, ""))
-        if exclude_name:
-            names.discard(exclude_name)
+            names.add(_slug(room.get(CONF_NAME, "")))
         return names
+
+    def _get_existing_trvs(self) -> set[str]:
+        """Collect all TRV entities across all zones and current rooms."""
+        trvs = {
+            room.get(CONF_TRV_ENTITY)
+            for zone in self._zones
+            for room in zone.get(CONF_ROOMS, [])
+        }
+        trvs.update(room.get(CONF_TRV_ENTITY) for room in self._current_rooms)
+        trvs.update(self._other_entry_entities()[1])
+        return trvs
 
     async def async_step_add_room(
         self, user_input: dict[str, Any] | None = None
@@ -129,9 +162,9 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if not self.hass.states.get(trv_entity):
                 errors["base"] = "invalid_trv"
-            elif trv_entity in [r[CONF_TRV_ENTITY] for r in self._current_rooms]:
+            elif trv_entity in self._get_existing_trvs():
                 errors["base"] = "duplicate_trv"
-            elif room_name in self._get_existing_room_names():
+            elif _slug(room_name) in self._get_existing_room_names():
                 errors["base"] = "duplicate_room_name"
             else:
                 room = {
@@ -279,7 +312,7 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle reconfiguration - select which zone to edit."""
         self._reconfigure_entry = self._get_reconfigure_entry()
 
-        self._zones = self._reconfigure_entry.data.get(CONF_ZONES, [])
+        self._zones = copy.deepcopy(self._reconfigure_entry.data.get(CONF_ZONES, []))
 
         if not self._zones:
             return self.async_abort(reason="no_zones")
@@ -287,8 +320,8 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             zone_idx = user_input["zone_to_edit"]
             self._reconfigure_zone_index = zone_idx
-            self._current_zone = self._zones[zone_idx].copy()
-            self._current_rooms = self._current_zone.get(CONF_ROOMS, []).copy()
+            self._current_zone = copy.deepcopy(self._zones[zone_idx])
+            self._current_rooms = self._current_zone.get(CONF_ROOMS, [])
             return await self.async_step_reconfigure_zone()
 
         zone_options = {
@@ -319,12 +352,18 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if not self.hass.states.get(zone_thermostat):
                 errors["base"] = "invalid_thermostat"
-            elif any(
+            elif zone_thermostat in self._other_entry_entities()[0] or any(
                 idx != self._reconfigure_zone_index
                 and z[CONF_ZONE_THERMOSTAT] == zone_thermostat
                 for idx, z in enumerate(self._zones)
             ):
                 errors["base"] = "duplicate_zone_thermostat"
+            elif any(
+                idx != self._reconfigure_zone_index
+                and _slug(z.get(CONF_ZONE_NAME, "")) == _slug(user_input[CONF_ZONE_NAME])
+                for idx, z in enumerate(self._zones)
+            ):
+                errors["base"] = "duplicate_zone_name"
             else:
                 self._current_zone[CONF_ZONE_NAME] = user_input[CONF_ZONE_NAME]
                 self._current_zone[CONF_ZONE_THERMOSTAT] = zone_thermostat
@@ -367,8 +406,7 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._current_zone[CONF_ROOMS] = self._current_rooms
                 self._zones[self._reconfigure_zone_index] = self._current_zone
 
-                new_data = self._reconfigure_entry.data.copy()
-                new_data[CONF_ZONES] = self._zones
+                new_data = {**self._reconfigure_entry.data, CONF_ZONES: self._zones}
 
                 return self.async_update_reload_and_abort(
                     self._reconfigure_entry,
@@ -456,19 +494,17 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             trv_entity = user_input[CONF_TRV_ENTITY]
             room_name = user_input[CONF_NAME]
 
-            current_name = None
-            if self._reconfigure_room_index is not None:
-                current_name = self._current_rooms[self._reconfigure_room_index].get(CONF_NAME)
-
             other_zone_names: set[str] = set()
+            other_zone_trvs: set[str] = set(self._other_entry_entities()[1])
             for idx, zone in enumerate(self._zones):
                 if idx == self._reconfigure_zone_index:
                     continue
                 for room in zone.get(CONF_ROOMS, []):
-                    other_zone_names.add(room.get(CONF_NAME, ""))
+                    other_zone_names.add(_slug(room.get(CONF_NAME, "")))
+                    other_zone_trvs.add(room.get(CONF_TRV_ENTITY))
 
             current_zone_names = {
-                r.get(CONF_NAME, "")
+                _slug(r.get(CONF_NAME, ""))
                 for i, r in enumerate(self._current_rooms)
                 if i != self._reconfigure_room_index
             }
@@ -477,12 +513,12 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if not self.hass.states.get(trv_entity):
                 errors["base"] = "invalid_trv"
-            elif any(
+            elif trv_entity in other_zone_trvs or any(
                 idx != self._reconfigure_room_index and r[CONF_TRV_ENTITY] == trv_entity
                 for idx, r in enumerate(self._current_rooms)
             ):
                 errors["base"] = "duplicate_trv"
-            elif room_name in all_existing_names:
+            elif _slug(room_name) in all_existing_names:
                 errors["base"] = "duplicate_room_name"
             else:
                 room = {
@@ -520,7 +556,7 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ),
                     vol.Optional(
                         CONF_TEMP_SENSOR,
-                        default=current_room.get(CONF_TEMP_SENSOR),
+                        description={"suggested_value": current_room.get(CONF_TEMP_SENSOR)},
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(
                             domain=SENSOR_DOMAIN,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -15,7 +14,6 @@ from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
 from homeassistant.components.select import DOMAIN as SELECT_DOMAIN
 from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE, STATE_ON
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
@@ -60,9 +58,11 @@ class RoomStateMachine:
         self._window_open_confirmed = False
         self._window_timer: asyncio.TimerHandle | None = None
         self._window_timer_started: datetime | None = None
+        self._window_timer_delay: float = window_delay
         self._current_temp: float | None = None
         self._target_temp: float | None = None
         self._is_on = False
+        self._calling_for_heat = False
 
         # Calibration sync tracking
         self._calibration_entity: str | None = None
@@ -76,11 +76,6 @@ class RoomStateMachine:
 
         # Temperature sensor selector (some TRVs need this set to "external")
         self._temp_sensor_selector: str | None = None
-
-        # Direct MQTT sync for Zigbee2MQTT devices without exposed entities
-        self._mqtt_friendly_name: str | None = None
-        self._mqtt_calibration_available = False
-        self._mqtt_control_available = False
 
         # Callback to notify zone when needs_heat changes
         self._on_needs_heat_changed: Callable[[], None] | None = None
@@ -137,26 +132,33 @@ class RoomStateMachine:
                 self.climate_entity,
             )
             await self._async_discover_sync_entities()
-            if self._external_temp_available or self._calibration_available or self._mqtt_calibration_available:
+            if self._external_temp_available or self._calibration_available:
                 self.hass.loop.call_later(
                     5.0,
                     lambda: self.hass.async_create_task(self._async_forced_initial_sync()),
                 )
-        else:
-            # MQTT discovery for direct device control (bypasses HA quirks)
-            await self._async_try_mqtt_discovery()
-            if self.calibration_sync and not self.temp_sensor:
-                _LOGGER.info(
-                    "%s: Calibration sync enabled but no external temp sensor configured - skipping",
-                    self.room_name,
-                )
+        elif self.calibration_sync:
+            _LOGGER.info(
+                "%s: Calibration sync enabled but no external temp sensor configured - skipping",
+                self.room_name,
+            )
 
         # Initialize state
-        await self.async_update_climate_state()
         self._update_window_state()
+        if not self._window_open:
+            if self._window_open_confirmed:
+                _LOGGER.info(
+                    "%s: Window closed since last run, clearing restored open state",
+                    self.room_name,
+                )
+                self._window_open_confirmed = False
+            if self._window_timer:
+                self._window_timer.cancel()
+                self._window_timer = None
+        await self.async_update_climate_state()
 
         # Start window timer if window is open and not already confirmed
-        if self._window_open and not self._window_open_confirmed:
+        if self._window_open and not self._window_open_confirmed and not self._window_timer:
             _LOGGER.info(
                 "%s: Window open on startup, starting %ds confirmation timer",
                 self.room_name,
@@ -212,6 +214,8 @@ class RoomStateMachine:
 
                 was_confirmed = self._window_open_confirmed
                 self._window_open_confirmed = False
+                self._update_heat_demand()
+                self._schedule_save()
 
                 if was_confirmed:
                     _LOGGER.info(
@@ -238,6 +242,7 @@ class RoomStateMachine:
 
         if delay_seconds is None:
             delay_seconds = self.window_delay
+        self._window_timer_delay = delay_seconds
 
         _LOGGER.info(
             "%s: Window opened, will confirm in %.0f seconds",
@@ -262,6 +267,8 @@ class RoomStateMachine:
             return
 
         self._window_open_confirmed = True
+        self._update_heat_demand()
+        self._schedule_save()
         _LOGGER.info(
             "%s: Window open confirmed after %d second delay - suppressing heat requests",
             self.room_name,
@@ -363,16 +370,12 @@ class RoomStateMachine:
                 )
                 return
 
-        # Fallback: Try direct MQTT for Zigbee2MQTT devices
-        await self._async_try_mqtt_discovery()
-
-        if not self._mqtt_calibration_available:
-            _LOGGER.warning(
-                "%s: Calibration sync enabled but no sync method found. "
-                "Searched device registry, patterns, and MQTT. TRV: %s",
-                self.room_name,
-                self.climate_entity,
-            )
+        _LOGGER.warning(
+            "%s: Calibration sync enabled but no calibration or external temperature "
+            "entity found for TRV %s",
+            self.room_name,
+            self.climate_entity,
+        )
         self._calibration_available = False
         self._external_temp_available = False
 
@@ -525,20 +528,17 @@ class RoomStateMachine:
     ) -> None:
         """Sync external temperature to TRV using best available method."""
         _LOGGER.debug(
-            "%s: Sync temperature called (external: %.1f, trv: %.1f, ext_available: %s, cal_available: %s, mqtt_available: %s)",
+            "%s: Sync temperature called (external: %.1f, trv: %.1f, ext_available: %s, cal_available: %s)",
             self.room_name,
             external_temp,
             trv_temp,
             self._external_temp_available,
             self._calibration_available,
-            self._mqtt_calibration_available,
         )
         if self._external_temp_available:
             await self._async_sync_external_temp(external_temp)
         elif self._calibration_available:
             await self._async_sync_calibration(external_temp, trv_temp)
-        elif self._mqtt_calibration_available:
-            await self._async_sync_mqtt_calibration(external_temp, trv_temp)
         else:
             _LOGGER.debug(
                 "%s: No sync method available",
@@ -609,6 +609,14 @@ class RoomStateMachine:
         if not cal_state or cal_state.state in ("unavailable", "unknown"):
             return
 
+        climate_state = self.hass.states.get(self.climate_entity)
+        if climate_state and cal_state.last_changed > climate_state.last_updated:
+            _LOGGER.debug(
+                "%s: Calibration changed after TRV last reported, waiting for fresh TRV reading",
+                self.room_name,
+            )
+            return
+
         try:
             current_calibration = float(cal_state.state)
         except (ValueError, TypeError):
@@ -664,129 +672,8 @@ class RoomStateMachine:
                 self.room_name,
             )
 
-    async def _async_try_mqtt_discovery(self) -> None:
-        """Try to discover Zigbee2MQTT device for direct MQTT control."""
-        entity_reg = er.async_get(self.hass)
-        device_reg = dr.async_get(self.hass)
-
-        climate_entry = entity_reg.async_get(self.climate_entity)
-        if not climate_entry or not climate_entry.device_id:
-            _LOGGER.debug(
-                "%s: Cannot discover MQTT - no device_id for climate entity",
-                self.room_name,
-            )
-            return
-
-        device = device_reg.async_get(climate_entry.device_id)
-        if not device:
-            return
-
-        z2m_friendly_name = None
-        for domain, identifier in device.identifiers:
-            if domain == "mqtt":
-                z2m_friendly_name = identifier
-                break
-
-        if not z2m_friendly_name:
-            _LOGGER.debug(
-                "%s: Device is not a Zigbee2MQTT device (identifiers: %s)",
-                self.room_name,
-                device.identifiers,
-            )
-            return
-
-        if "mqtt" not in self.hass.services.async_services():
-            _LOGGER.debug(
-                "%s: MQTT service not available, cannot use direct MQTT sync",
-                self.room_name,
-            )
-            return
-
-        self._mqtt_friendly_name = z2m_friendly_name
-        self._mqtt_calibration_available = True
-        self._mqtt_control_available = True
-
-        _LOGGER.info(
-            "%s: Found Zigbee2MQTT device '%s' - will use direct MQTT for control and calibration",
-            self.room_name,
-            z2m_friendly_name,
-        )
-
-    async def _async_sync_mqtt_calibration(
-        self, external_temp: float, trv_temp: float
-    ) -> None:
-        """Sync calibration offset directly via MQTT publish."""
-        if not self._mqtt_calibration_available or not self._mqtt_friendly_name:
-            return
-
-        current_calibration = 0.0
-        climate_state = self.hass.states.get(self.climate_entity)
-        if climate_state:
-            current_calibration = climate_state.attributes.get(
-                "local_temperature_calibration", 0.0
-            ) or 0.0
-
-        raw_trv_temp = trv_temp - current_calibration
-        new_calibration = round(external_temp - raw_trv_temp, 1)
-
-        if (
-            self._last_calibration is not None
-            and abs(new_calibration - self._last_calibration) < 0.2
-        ):
-            return
-
-        new_calibration = max(-12.0, min(12.0, new_calibration))
-
-        try:
-            await self.hass.services.async_call(
-                "mqtt",
-                "publish",
-                {
-                    "topic": f"zigbee2mqtt/{self._mqtt_friendly_name}/set",
-                    "payload": json.dumps({"local_temperature_calibration": new_calibration}),
-                },
-                blocking=True,
-            )
-            _LOGGER.info(
-                "%s: [MQTT] Synced calibration offset to %.1f (External: %.1f, Raw TRV: %.1f, Prev cal: %.1f)",
-                self.room_name,
-                new_calibration,
-                external_temp,
-                raw_trv_temp,
-                current_calibration,
-            )
-            self._last_calibration = new_calibration
-        except Exception:
-            _LOGGER.exception(
-                "%s: Failed to sync calibration via MQTT",
-                self.room_name,
-            )
-
     async def async_set_trv_target_temp(self, temperature: float) -> None:
-        """Set TRV target temperature using best available method."""
-        if self._mqtt_control_available and self._mqtt_friendly_name:
-            try:
-                await self.hass.services.async_call(
-                    "mqtt",
-                    "publish",
-                    {
-                        "topic": f"zigbee2mqtt/{self._mqtt_friendly_name}/set",
-                        "payload": json.dumps({"occupied_heating_setpoint": temperature}),
-                    },
-                    blocking=True,
-                )
-                _LOGGER.debug(
-                    "%s: [MQTT] Set target temp to %.1f°C",
-                    self.room_name,
-                    temperature,
-                )
-                return
-            except Exception:
-                _LOGGER.exception(
-                    "%s: Failed to set target temp via MQTT, falling back to HA service",
-                    self.room_name,
-                )
-
+        """Set TRV target temperature."""
         try:
             await self.hass.services.async_call(
                 CLIMATE_DOMAIN,
@@ -823,6 +710,7 @@ class RoomStateMachine:
                 )
                 old_needs_heat = self.needs_heat
                 self._is_on = False
+                self._update_heat_demand()
                 if old_needs_heat and not self.needs_heat:
                     self._notify_needs_heat_changed()
             return
@@ -857,6 +745,7 @@ class RoomStateMachine:
             self._current_temp = trv_temp
         self._target_temp = state.attributes.get("temperature")
         self._is_on = state.state not in ("off", "unavailable", "unknown")
+        self._update_heat_demand()
 
         new_needs_heat = self.needs_heat
 
@@ -892,18 +781,36 @@ class RoomStateMachine:
                 "NEEDS HEAT" if new_needs_heat else "NO HEAT",
             )
 
+    def _update_heat_demand(self) -> None:
+        """Latch heat demand with hysteresis.
+
+        Demand starts below target - differential and holds until target is reached.
+        """
+        if (
+            not self._is_on
+            or self._window_open_confirmed
+            or self._current_temp is None
+            or self._target_temp is None
+        ):
+            self._calling_for_heat = False
+        elif self._calling_for_heat:
+            self._calling_for_heat = self._current_temp < self._target_temp
+        else:
+            self._calling_for_heat = (
+                self._current_temp < self._target_temp - self.temp_differential
+            )
+
     @property
     def needs_heat(self) -> bool:
         """Return True if room needs heat."""
-        if not self._is_on:
-            return False
-        if self._window_open_confirmed:
-            return False
-        if self._current_temp is None or self._target_temp is None:
-            return False
+        return self._calling_for_heat
 
-        threshold = self._target_temp - self.temp_differential
-        return self._current_temp < threshold
+    @property
+    def heat_threshold(self) -> float | None:
+        """Return the temperature below which heat demand will start."""
+        if self._target_temp is None:
+            return None
+        return self._target_temp - self.temp_differential
 
     @property
     def temperature_deficit(self) -> float:
@@ -942,11 +849,6 @@ class RoomStateMachine:
     def window_timer_active(self) -> bool:
         """Return True if window delay timer is running."""
         return self._window_timer is not None
-
-    @property
-    def mqtt_control_available(self) -> bool:
-        """Return True if MQTT control is available for this TRV."""
-        return self._mqtt_control_available
 
     def set_on_needs_heat_changed(self, callback: Callable[[], None]) -> None:
         """Set callback for when needs_heat state changes."""
@@ -1001,15 +903,25 @@ class RoomStateMachine:
             )
             self._start_window_delay_timer(delay_seconds=timer_remaining)
 
+    def _schedule_save(self) -> None:
+        """Write current state to storage soon, so a crash doesn't lose it."""
+        if self._storage is None:
+            return
+        self._store_state()
+        self._storage.async_schedule_save()
+
     async def _async_save_state(self) -> None:
         """Save current state to persistent storage."""
         if self._storage is None:
             return
+        self._store_state()
 
+    def _store_state(self) -> None:
+        """Copy current state into the storage data."""
         window_timer_remaining = None
         if self._window_timer and self._window_timer_started:
             elapsed = (dt_util.now() - self._window_timer_started).total_seconds()
-            window_timer_remaining = max(0, self.window_delay - elapsed)
+            window_timer_remaining = max(0, self._window_timer_delay - elapsed)
 
         self._storage.set_room_state(
             room_name=self.room_name,

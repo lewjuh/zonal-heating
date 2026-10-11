@@ -64,6 +64,10 @@ class ZonalHeatingStorage:
         await self._store.async_save(self._data)
         _LOGGER.debug("Saved persistent state: %s", self._data)
 
+    def async_schedule_save(self) -> None:
+        """Save data after a short delay, coalescing bursts of changes."""
+        self._store.async_delay_save(lambda: self._data, 10)
+
     async def async_remove(self) -> None:
         """Remove stored data."""
         await self._store.async_remove()
