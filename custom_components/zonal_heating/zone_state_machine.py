@@ -496,13 +496,23 @@ class ZoneStateMachine:
                     target_temp,
                     zone_temp or 0,
                 )
+                # Not combined into one set_temperature call: integrations are free
+                # to ignore hvac_mode there (meross_lan does), leaving the zone off.
+                await self.hass.services.async_call(
+                    CLIMATE_DOMAIN,
+                    SERVICE_SET_HVAC_MODE,
+                    {
+                        ATTR_ENTITY_ID: self.zone_climate,
+                        ATTR_HVAC_MODE: HVACMode.HEAT,
+                    },
+                    blocking=True,
+                )
                 await self.hass.services.async_call(
                     CLIMATE_DOMAIN,
                     SERVICE_SET_TEMPERATURE,
                     {
                         ATTR_ENTITY_ID: self.zone_climate,
                         ATTR_TEMPERATURE: target_temp,
-                        ATTR_HVAC_MODE: HVACMode.HEAT,
                     },
                     blocking=True,
                 )
@@ -530,6 +540,16 @@ class ZoneStateMachine:
             return
         finally:
             self._updating_zone = False
+
+        new_state = self.hass.states.get(self.zone_climate)
+        if new_state and (new_state.state == HVACMode.OFF) == turn_on:
+            _LOGGER.warning(
+                "%s: Zone climate %s still reports %s after asking it to turn %s",
+                self.zone_name,
+                self.zone_climate,
+                new_state.state,
+                "ON" if turn_on else "OFF",
+            )
 
         _LOGGER.info(
             "%s: Zone change complete - now %s (min_cycle_time reset)",

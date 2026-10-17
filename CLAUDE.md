@@ -159,7 +159,7 @@ The `config_flow.py` implements a **multi-step wizard**:
 - Evaluates on any room climate state change
 - Turns zone ON if any room `needs_heat` with `temperature_deficit > 0`
 - Respects `min_cycle_time` and schedules automatic retry when blocked
-- Turns on with a single `climate.set_temperature` call carrying `hvac_mode: heat` and target `current + 5C` capped at `max_temp`
+- Turns on with `climate.set_hvac_mode: heat` followed by `climate.set_temperature` at `current + 5C` capped at `max_temp`. Never fold `hvac_mode` into the `set_temperature` call: HA passes it through to the integration, and some ignore it (meross_lan MTS200/215 does), which left the zone thermostats stuck off in 1.8.x
 - Any mode other than `off` counts as on when deciding whether to turn the zone off
 
 ## Common Issues & Solutions
