@@ -18,7 +18,7 @@ The integration uses a **two-level state machine hierarchy**:
    - Manages zone-level heating decisions
    - Monitors all rooms in a zone
    - Controls the zone thermostat (boiler/heating system)
-   - Enforces minimum cycle time to prevent rapid on/off switching
+   - Enforces separate minimum on and off times to prevent boiler short-cycling
    - Coordinates heating based on room priorities and demands
 
 2. **Room State Machine** (`room_state_machine.py`)
@@ -47,7 +47,7 @@ Only **4 paths** write to TRVs:
 
 1. **User sets temperature** via virtual entity -> forwards to TRV (`climate.py`)
 2. **Startup sync** pushes restored target and on/off mode to TRV; a TRV in `auto` or another active mode is not forced to `heat` (`climate.py`)
-3. **Calibration sync** writes external temp/offset to TRV number entity (`room_state_machine.py`) - not a target temp write
+3. **Calibration sync** writes external temp/offset to TRV number entity (`room_state_machine.py`) - not a target temp write. Sync entities are discovered from the entity registry, never from current states: Z2M entities are `unknown` for ~45 s after HA starts, and state-based discovery silently disabled calibration in 1.8.x
 4. **Zone thermostat** gets set to heat at current+5, capped at its `max_temp`, when turning on (`zone_state_machine.py`)
 
 ### Key Design Decisions
@@ -58,7 +58,7 @@ Only **4 paths** write to TRVs:
 
 3. **Event-Driven Updates**: Both state machines use `async_track_state_change_event` to react to entity changes rather than polling.
 
-4. **Minimum Cycle Time Protection**: Zone state machine prevents rapid zone thermostat cycling with configurable minimum time between state changes. When blocked, it automatically schedules retry.
+4. **Minimum On/Off Time Protection**: The zone stays on for at least `min_on_time` after turning on and off for at least `min_off_time` after turning off. When blocked, it automatically schedules a retry.
 
 5. **Window Detection Suppresses Demand Only**: When a window opens (after configurable delay), the room's `needs_heat` flag is suppressed so the zone won't call for heat. The TRV target temperature is never changed.
 
@@ -144,7 +144,7 @@ The `config_flow.py` implements a **multi-step wizard**:
 4. `async_step_zones_complete` (add more zones or continue)
 5. `async_step_settings` (global settings, creates entry)
 
-**Settings**: temp_differential, min_cycle_time, window_delay, calibration_sync
+**Settings**: temp_differential, min_on_time, min_off_time, window_delay, calibration_sync
 
 **Reconfiguration Support**: `async_step_reconfigure` allows editing existing zones/rooms without recreating the entire config entry.
 
@@ -152,13 +152,16 @@ The `config_flow.py` implements a **multi-step wizard**:
 
 ### Room State Machine Properties
 - `needs_heat`: Latched with hysteresis. Starts when current_temp < target_temp - differential, holds until current_temp >= target_temp. Always false when the climate is off, the TRV is unavailable, or a window is confirmed open
+- `trv_satisfied`: The TRV's own view. `hvac_action == idle` when the TRV reports it (Sonoff TRVZB), otherwise TRV reading >= TRV target (Tuya TV02 has no hvac_action)
+- `demand_stalled`: Set when the room gains less than 0.2C in 60 min of zone-on time; cleared after 2h, when demand ends, or when the target changes
+- `calls_for_heat`: What the zone actually uses: `needs_heat` and deficit > 0 and not `trv_satisfied` and not `demand_stalled`. This stops the boiler running while every valve is shut (seen live: 21 h overnight with the Kitchen TRV reading 1.5C above its room sensor)
 - `temperature_deficit`: Used for sorting rooms in logs and diagnostics by the zone coordinator
 - `window_open_confirmed`: Only true after delay timer expires
 
 ### Zone State Machine Logic
 - Evaluates on any room climate state change
-- Turns zone ON if any room `needs_heat` with `temperature_deficit > 0`
-- Respects `min_cycle_time` and schedules automatic retry when blocked
+- Turns zone ON if any room `calls_for_heat`
+- Respects `min_on_time` / `min_off_time` and schedules automatic retry when blocked
 - Turns on with `climate.set_hvac_mode: heat` followed by `climate.set_temperature` at `current + 5C` capped at `max_temp`. Never fold `hvac_mode` into the `set_temperature` call: HA passes it through to the integration, and some ignore it (meross_lan MTS200/215 does), which left the zone thermostats stuck off in 1.8.x
 - Any mode other than `off` counts as on when deciding whether to turn the zone off
 
@@ -170,9 +173,8 @@ The `config_flow.py` implements a **multi-step wizard**:
 
 ### Heating Not Activating
 **Debug**: Check logs for "ZONE EVALUATION" entries. Verify:
-1. At least one room reports `needs_heat = True`
-2. Room has `temperature_deficit > 0`
-3. Zone not blocked by `min_cycle_time` (look for "MIN CYCLE TIME BLOCKING" warnings)
+1. At least one room reports `calls_for_heat = True` (not just `needs_heat`; check `trv_satisfied` and `demand_stalled`)
+2. Zone not held by `min_on_time` / `min_off_time` (look for "MIN ON TIME" / "MIN OFF TIME BLOCKING")
 
 ### Window Sensors Not Working
 **Debug**: Check for "Window opened" log entries. The delay (default 30s) prevents false triggers. When confirmed open, the room suppresses its `needs_heat` flag but the TRV target temperature remains unchanged.
@@ -185,7 +187,8 @@ The code uses **structured, searchable log messages**:
 
 When debugging, search logs for:
 - `"ZONE EVALUATION"` - zone decision points
-- `"MIN CYCLE TIME"` - cycling protection
+- `"MIN ON TIME"` / `"MIN OFF TIME"` - cycling protection
+- `"Not warming"` - stall guard dropped a room's demand
 - `"Window opened"` - window detection
 - `"NEEDS HEAT"` - room heating decisions
 

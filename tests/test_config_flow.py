@@ -34,7 +34,8 @@ ENTRY_DATA = {
     ],
     "settings": {
         "temp_differential": 0.25,
-        "min_cycle_time": 5,
+        "min_on_time": 10,
+        "min_off_time": 10,
         "window_delay": 30,
         "calibration_sync": False,
     },

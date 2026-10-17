@@ -12,7 +12,8 @@ from homeassistant.core import HomeAssistant
 
 from .const import (
     CONF_CALIBRATION_SYNC,
-    CONF_MIN_CYCLE_TIME,
+    CONF_MIN_OFF_TIME,
+    CONF_MIN_ON_TIME,
     CONF_ROOMS,
     CONF_SETTINGS,
     CONF_TEMP_DIFFERENTIAL,
@@ -23,7 +24,8 @@ from .const import (
     CONF_ZONE_THERMOSTAT,
     CONF_ZONES,
     DEFAULT_CALIBRATION_SYNC,
-    DEFAULT_MIN_CYCLE_TIME,
+    DEFAULT_MIN_OFF_TIME,
+    DEFAULT_MIN_ON_TIME,
     DEFAULT_TEMP_DIFFERENTIAL,
     DEFAULT_WINDOW_DELAY,
     DOMAIN,
@@ -88,7 +90,8 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
     coordinators = hass.data[DOMAIN][entry.entry_id]["coordinators"]
 
     window_delay = settings.get(CONF_WINDOW_DELAY, DEFAULT_WINDOW_DELAY)
-    min_cycle_time = settings.get(CONF_MIN_CYCLE_TIME, DEFAULT_MIN_CYCLE_TIME)
+    min_on_time = settings.get(CONF_MIN_ON_TIME, DEFAULT_MIN_ON_TIME)
+    min_off_time = settings.get(CONF_MIN_OFF_TIME, DEFAULT_MIN_OFF_TIME)
     temp_differential = settings.get(CONF_TEMP_DIFFERENTIAL, DEFAULT_TEMP_DIFFERENTIAL)
     calibration_sync = settings.get(CONF_CALIBRATION_SYNC, DEFAULT_CALIBRATION_SYNC)
 
@@ -132,7 +135,8 @@ async def _async_setup_coordinators(hass: HomeAssistant, entry: ConfigEntry) -> 
             zone_name=zone_name,
             zone_climate=zone_climate,
             rooms=room_state_machines,
-            min_cycle_time=min_cycle_time,
+            min_on_time=min_on_time,
+            min_off_time=min_off_time,
             storage=storage,
         )
 

@@ -197,8 +197,8 @@ class ZoneDiagnosticSensor(SensorEntity):
             elapsed = (dt_util.now() - coordinator.last_zone_change).total_seconds() / 60
             time_since_change = round(elapsed, 1)
 
-            if elapsed < coordinator.min_cycle_time:
-                time_until_cycle_allowed = round(coordinator.min_cycle_time - elapsed, 1)
+            if elapsed < coordinator.current_hold_time:
+                time_until_cycle_allowed = round(coordinator.current_hold_time - elapsed, 1)
                 cycle_time_blocking = True
 
         rooms_needing_heat = []
@@ -208,6 +208,9 @@ class ZoneDiagnosticSensor(SensorEntity):
             room_info = {
                 "name": room.room_name,
                 "needs_heat": room.needs_heat,
+                "calls_for_heat": room.calls_for_heat,
+                "trv_satisfied": room.trv_satisfied,
+                "demand_stalled": room.demand_stalled,
                 "current_temp": room.current_temperature,
                 "target_temp": room.target_temperature,
                 "deficit": round(room.temperature_deficit, 2) if room.temperature_deficit else 0,
@@ -216,7 +219,7 @@ class ZoneDiagnosticSensor(SensorEntity):
                 "window_confirmed": room.window_open_confirmed,
             }
 
-            if room.needs_heat and room.temperature_deficit > 0:
+            if room.calls_for_heat:
                 rooms_needing_heat.append(room_info)
             else:
                 rooms_not_needing_heat.append(room_info)
@@ -229,7 +232,8 @@ class ZoneDiagnosticSensor(SensorEntity):
             "zone_climate": coordinator.zone_climate,
             "zone_is_on": coordinator.zone_is_on,
             "zone_current_temp": coordinator.zone_current_temp,
-            "min_cycle_time_minutes": coordinator.min_cycle_time,
+            "min_on_time_minutes": coordinator.min_on_time,
+            "min_off_time_minutes": coordinator.min_off_time,
             "time_since_last_change_minutes": time_since_change,
             "time_until_cycle_allowed_minutes": time_until_cycle_allowed,
             "cycle_time_blocking": cycle_time_blocking and not in_startup_grace,
@@ -254,7 +258,7 @@ class ZoneDiagnosticSensor(SensorEntity):
             return f"Heating active - {len(rooms_needing_heat)} room(s) need heat: {', '.join(room_names)}"
 
         if cycle_blocking:
-            return f"Would turn on but min_cycle_time blocking ({coordinator.min_cycle_time} min cooldown)"
+            return f"Would turn on but min off time blocking ({coordinator.min_off_time} min)"
 
         return f"Zone OFF but {len(rooms_needing_heat)} room(s) requesting heat - check zone thermostat"
 
@@ -344,6 +348,10 @@ class RoomDiagnosticSensor(SensorEntity):
 
         if room.window_open_confirmed:
             self._attr_native_value = "window_open"
+        elif room.needs_heat and room.demand_stalled:
+            self._attr_native_value = "stalled"
+        elif room.needs_heat and room.trv_satisfied:
+            self._attr_native_value = "trv_satisfied"
         elif room.needs_heat:
             self._attr_native_value = "needs_heat"
         elif not room.is_on:
@@ -374,6 +382,9 @@ class RoomDiagnosticSensor(SensorEntity):
             "temp_differential": room.temp_differential,
             "temperature_deficit": round(room.temperature_deficit, 2) if room.temperature_deficit else 0,
             "needs_heat": room.needs_heat,
+            "calls_for_heat": room.calls_for_heat,
+            "trv_satisfied": room.trv_satisfied,
+            "demand_stalled": room.demand_stalled,
             "is_on": room.is_on,
             "window_open": room.window_open,
             "window_open_confirmed": room.window_open_confirmed,
@@ -399,6 +410,18 @@ class RoomDiagnosticSensor(SensorEntity):
 
         if room.current_temperature is None or room.target_temperature is None:
             return "Missing temperature data"
+
+        if room.needs_heat and room.demand_stalled:
+            return (
+                f"Not warming at {room.current_temperature:.1f}C despite zone heating - "
+                "demand ignored for now, check the TRV and radiator"
+            )
+
+        if room.needs_heat and room.trv_satisfied:
+            return (
+                f"Below target ({room.current_temperature:.1f}C) but the TRV reports it is "
+                "satisfied - not holding the zone on"
+            )
 
         if room.needs_heat:
             return (

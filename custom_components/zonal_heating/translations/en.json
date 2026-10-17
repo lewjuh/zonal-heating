@@ -106,13 +106,15 @@
             "settings": {
                 "data": {
                     "temp_differential": "Temperature Differential (°C)",
-                    "min_cycle_time": "Minimum Cycle Time (minutes)",
+                    "min_on_time": "Minimum On Time (minutes)",
+                    "min_off_time": "Minimum Off Time (minutes)",
                     "window_delay": "Window Open Delay (seconds)",
                     "calibration_sync": "Sync External Temp to TRV"
                 },
                 "data_description": {
                     "temp_differential": "How far below target temperature before requesting heat (e.g., 0.5°C means heat when 0.5° below target)",
-                    "min_cycle_time": "Minimum time between zone thermostat on/off changes to prevent rapid cycling",
+                    "min_on_time": "Once a zone thermostat turns on, keep it on for at least this long so the boiler is not short-cycled",
+                    "min_off_time": "Once a zone thermostat turns off, keep it off for at least this long before turning it back on",
                     "window_delay": "Wait time after window opens before pausing heating (prevents false triggers)",
                     "calibration_sync": "Sync external sensor temperature to TRV via calibration offset or direct input. Forces TRV to use external sensor reading."
                 },
@@ -140,13 +142,15 @@
             "init": {
                 "data": {
                     "temp_differential": "Temperature Differential (°C)",
-                    "min_cycle_time": "Minimum Cycle Time (minutes)",
+                    "min_on_time": "Minimum On Time (minutes)",
+                    "min_off_time": "Minimum Off Time (minutes)",
                     "window_delay": "Window Open Delay (seconds)",
                     "calibration_sync": "Sync External Temp to TRV"
                 },
                 "data_description": {
                     "temp_differential": "How far below target temperature before requesting heat (e.g., 0.5°C means heat when 0.5° below target)",
-                    "min_cycle_time": "Minimum time between zone thermostat on/off changes to prevent rapid cycling",
+                    "min_on_time": "Once a zone thermostat turns on, keep it on for at least this long so the boiler is not short-cycled",
+                    "min_off_time": "Once a zone thermostat turns off, keep it off for at least this long before turning it back on",
                     "window_delay": "Wait time after window opens before pausing heating (prevents false triggers)",
                     "calibration_sync": "Sync external sensor temperature to TRV via calibration offset or direct input. Forces TRV to use external sensor reading."
                 },

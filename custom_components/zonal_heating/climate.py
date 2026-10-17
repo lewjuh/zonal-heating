@@ -314,7 +314,7 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         # Use room SM as single source of truth for heat requesting
         old_heat_requesting = self._heat_requesting
         room_sm = self._get_room_state_machine()
-        self._heat_requesting = room_sm.needs_heat if room_sm else False
+        self._heat_requesting = room_sm.calls_for_heat if room_sm else False
 
         if old_heat_requesting != self._heat_requesting:
             _LOGGER.debug(
@@ -474,6 +474,8 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
 
         if room_state_machine:
             attrs["sm_needs_heat"] = room_state_machine.needs_heat
+            attrs["sm_trv_satisfied"] = room_state_machine.trv_satisfied
+            attrs["sm_demand_stalled"] = room_state_machine.demand_stalled
             attrs["sm_temperature_deficit"] = round(room_state_machine.temperature_deficit, 2)
             attrs["sm_window_confirmed"] = room_state_machine.window_open_confirmed
             attrs["sm_is_on"] = room_state_machine.is_on
@@ -503,11 +505,17 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         if self._attr_hvac_mode == HVACMode.OFF:
             return "Climate entity turned off"
 
+        if room_sm and room_sm.needs_heat and room_sm.demand_stalled:
+            return "Not warming despite zone heating - check the TRV and radiator"
+
+        if room_sm and room_sm.needs_heat and room_sm.trv_satisfied:
+            return "Below target but the TRV reports it is satisfied"
+
         if room_sm and room_sm.needs_heat:
             if self._zone_active:
                 return f"Heating - deficit {room_sm.temperature_deficit:.1f}C"
             if zone_coordinator and zone_coordinator.retry_timer_active:
-                return "Needs heat but zone blocked by min_cycle_time"
+                return "Needs heat but zone held off by min off time"
             return "Needs heat - waiting for zone to activate"
 
         if (

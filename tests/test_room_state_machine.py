@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
-from pytest_homeassistant_custom_component.common import async_mock_service
+from datetime import timedelta
+
+from freezegun.api import FrozenDateTimeFactory
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_mock_service,
+)
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from custom_components.zonal_heating.room_state_machine import RoomStateMachine
 from custom_components.zonal_heating.storage import ZonalHeatingStorage
@@ -13,10 +20,35 @@ TRV = "climate.bedroom_trv"
 WINDOW = "binary_sensor.bedroom_window"
 
 
-def _set_trv(hass: HomeAssistant, current: float, target: float = 21.0, mode: str = "heat") -> None:
+def _set_trv(
+    hass: HomeAssistant,
+    current: float,
+    target: float = 21.0,
+    mode: str = "heat",
+    **attrs,
+) -> None:
     hass.states.async_set(
-        TRV, mode, {"current_temperature": current, "temperature": target}
+        TRV, mode, {"current_temperature": current, "temperature": target, **attrs}
     )
+
+
+def _register_trv_device(hass: HomeAssistant, *entities: tuple[str, str]) -> None:
+    """Register the TRV and its sibling entities on one device, as Z2M does."""
+    entry = MockConfigEntry(domain="mqtt")
+    entry.add_to_hass(hass)
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={("mqtt", "bedroom_trv")}
+    )
+    ent_reg = er.async_get(hass)
+    for domain, object_id in (("climate", "bedroom_trv"), *entities):
+        ent_reg.async_get_or_create(
+            domain,
+            "mqtt",
+            object_id,
+            suggested_object_id=object_id,
+            config_entry=entry,
+            device_id=device.id,
+        )
 
 
 async def _set_and_update(room: RoomStateMachine, hass: HomeAssistant, current: float) -> None:
@@ -158,3 +190,149 @@ async def test_set_target_uses_climate_service(hass: HomeAssistant) -> None:
 
     assert len(calls) == 1
     assert calls[0].data == {"entity_id": TRV, "temperature": 22.5}
+
+
+async def test_calibration_found_while_entity_still_unknown(hass: HomeAssistant) -> None:
+    """Discovery uses the registry, so an entity with no value yet at startup is still found."""
+    cal_entity = "number.bedroom_trv_local_temperature_calibration"
+    _register_trv_device(hass, ("number", "bedroom_trv_local_temperature_calibration"))
+    hass.states.async_set(cal_entity, "unknown")
+    hass.states.async_set("sensor.bedroom_temp", "20.0")
+    _set_trv(hass, 19.0)
+
+    room = RoomStateMachine(
+        hass, "Bedroom", TRV, [], temp_sensor="sensor.bedroom_temp", calibration_sync=True
+    )
+    await room.async_start()
+
+    assert room._calibration_available
+    assert room._calibration_entity == cal_entity
+    await room.async_stop()
+
+
+async def test_external_input_preferred_and_selector_set_once_ready(
+    hass: HomeAssistant,
+) -> None:
+    """External temp input wins over calibration, and the sensor selector is switched lazily."""
+    ext_entity = "number.bedroom_trv_external_temperature_input"
+    selector = "select.bedroom_trv_temperature_sensor_select"
+    _register_trv_device(
+        hass,
+        ("number", "bedroom_trv_local_temperature_calibration"),
+        ("number", "bedroom_trv_external_temperature_input"),
+        ("select", "bedroom_trv_temperature_sensor_select"),
+    )
+    set_value = async_mock_service(hass, "number", "set_value")
+    select_option = async_mock_service(hass, "select", "select_option")
+    hass.states.async_set(ext_entity, "unknown")
+    hass.states.async_set(selector, "unknown")
+    _set_trv(hass, 19.0)
+
+    room = RoomStateMachine(hass, "Bedroom", TRV, [], calibration_sync=True)
+    room.temp_sensor = "sensor.bedroom_temp"
+    await room._async_discover_sync_entities()
+    assert room._external_temp_entity == ext_entity
+
+    await room._async_sync_external_temp(20.5)
+    assert not set_value and not select_option
+
+    hass.states.async_set(ext_entity, "19.0", {"min": 0, "max": 35})
+    hass.states.async_set(selector, "internal", {"options": ["internal", "external"]})
+    await room._async_sync_external_temp(20.5)
+
+    assert select_option[0].data == {"entity_id": selector, "option": "external"}
+    assert set_value[0].data == {"entity_id": ext_entity, "value": 20.5}
+
+
+async def test_room_not_counted_when_trv_reports_idle(hass: HomeAssistant) -> None:
+    """A room below target whose TRV has closed its valve does not hold the zone on."""
+    hass.states.async_set("sensor.bedroom_temp", "18.0")
+    _set_trv(hass, 21.5, hvac_action="idle")
+    room = RoomStateMachine(hass, "Bedroom", TRV, [], temp_sensor="sensor.bedroom_temp")
+    await room.async_start()
+
+    assert room.needs_heat
+    assert room.trv_satisfied
+    assert not room.calls_for_heat
+
+    _set_trv(hass, 21.5, hvac_action="heating")
+    await room.async_update_climate_state()
+    assert room.calls_for_heat
+    await room.async_stop()
+
+
+async def test_trv_reading_used_when_no_hvac_action(hass: HomeAssistant) -> None:
+    """Without hvac_action, a TRV reading at or above its target counts as satisfied."""
+    hass.states.async_set("sensor.bedroom_temp", "18.0")
+    _set_trv(hass, 21.0)
+    room = RoomStateMachine(hass, "Bedroom", TRV, [], temp_sensor="sensor.bedroom_temp")
+    await room.async_start()
+
+    assert room.needs_heat
+    assert not room.calls_for_heat
+
+    _set_trv(hass, 20.5)
+    await room.async_update_climate_state()
+    assert room.calls_for_heat
+    await room.async_stop()
+
+
+async def test_stalled_room_is_ignored_then_retried(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """A room that doesn't warm for an hour of zone heating is dropped, then retried."""
+    _set_trv(hass, 18.0)
+    room = RoomStateMachine(hass, "Bedroom", TRV, [])
+    await room.async_start()
+
+    room.update_demand_progress(zone_on=True)
+    freezer.tick(timedelta(minutes=59))
+    room.update_demand_progress(zone_on=True)
+    assert room.calls_for_heat
+
+    freezer.tick(timedelta(minutes=2))
+    room.update_demand_progress(zone_on=True)
+    assert room.demand_stalled
+    assert not room.calls_for_heat
+
+    freezer.tick(timedelta(hours=2))
+    room.update_demand_progress(zone_on=True)
+    assert not room.demand_stalled
+    assert room.calls_for_heat
+    await room.async_stop()
+
+
+async def test_warming_room_does_not_stall(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Steady progress keeps resetting the stall window."""
+    _set_trv(hass, 18.0)
+    room = RoomStateMachine(hass, "Bedroom", TRV, [])
+    await room.async_start()
+
+    room.update_demand_progress(zone_on=True)
+    for temp in (18.2, 18.4, 18.6):
+        freezer.tick(timedelta(minutes=50))
+        await _set_and_update(room, hass, temp)
+        room.update_demand_progress(zone_on=True)
+
+    assert not room.demand_stalled
+    await room.async_stop()
+
+
+async def test_target_change_clears_stall(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Changing the target gives a stalled room a fresh start."""
+    _set_trv(hass, 18.0)
+    room = RoomStateMachine(hass, "Bedroom", TRV, [])
+    await room.async_start()
+    room.update_demand_progress(zone_on=True)
+    freezer.tick(timedelta(minutes=61))
+    room.update_demand_progress(zone_on=True)
+    assert room.demand_stalled
+
+    _set_trv(hass, 18.0, target=22.0)
+    await room.async_update_climate_state()
+    assert not room.demand_stalled
+    await room.async_stop()

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 import logging
 from typing import TYPE_CHECKING
 
 from homeassistant.components.climate import (
+    ATTR_HVAC_ACTION,
     DOMAIN as CLIMATE_DOMAIN,
     SERVICE_SET_TEMPERATURE,
+    HVACAction,
 )
 from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN
 from homeassistant.components.select import DOMAIN as SELECT_DOMAIN
@@ -25,6 +28,10 @@ if TYPE_CHECKING:
     from .storage import ZonalHeatingStorage
 
 _LOGGER = logging.getLogger(__name__)
+
+STALL_TIMEOUT = timedelta(minutes=60)  # Zone-on time allowed without the room warming
+STALL_MIN_RISE = 0.2  # Degrees the room must gain within STALL_TIMEOUT
+STALL_RETRY = timedelta(hours=2)  # How long a stalled room is ignored before retrying
 
 
 class RoomStateMachine:
@@ -63,6 +70,13 @@ class RoomStateMachine:
         self._target_temp: float | None = None
         self._is_on = False
         self._calling_for_heat = False
+        self._trv_temp: float | None = None
+        self._trv_action: str | None = None
+
+        # Stall guard: rooms that don't warm while the zone runs stop holding it on
+        self._progress_since: datetime | None = None
+        self._progress_temp: float | None = None
+        self._stalled_at: datetime | None = None
 
         # Calibration sync tracking
         self._calibration_entity: str | None = None
@@ -76,6 +90,7 @@ class RoomStateMachine:
 
         # Temperature sensor selector (some TRVs need this set to "external")
         self._temp_sensor_selector: str | None = None
+        self._temp_sensor_selected = False
 
         # Callback to notify zone when needs_heat changes
         self._on_needs_heat_changed: Callable[[], None] | None = None
@@ -277,98 +292,79 @@ class RoomStateMachine:
         self._notify_needs_heat_changed()
 
     async def _async_discover_sync_entities(self) -> None:
-        """Discover calibration or external temp entities for this TRV."""
+        """Find the TRV's external temp or calibration entity.
+
+        Uses the entity registry rather than current states: at startup the TRV's
+        MQTT entities are often still unknown, and skipping them then disabled sync
+        until the next restart.
+        """
         device_name = self.climate_entity.split(".")[-1]
-
         entity_reg = er.async_get(self.hass)
-        climate_entry = entity_reg.async_get(self.climate_entity)
 
+        numbers: list[str] = []
+        selects: list[str] = []
+        climate_entry = entity_reg.async_get(self.climate_entity)
         if climate_entry and climate_entry.device_id:
-            device_id = climate_entry.device_id
-            _LOGGER.debug(
-                "%s: Found device_id %s for TRV, searching for related entities",
-                self.room_name,
-                device_id,
+            for entry in er.async_entries_for_device(entity_reg, climate_entry.device_id):
+                if entry.domain == NUMBER_DOMAIN:
+                    numbers.append(entry.entity_id)
+                elif entry.domain == SELECT_DOMAIN:
+                    selects.append(entry.entity_id)
+
+        numbers += [
+            f"number.{device_name}_{suffix}"
+            for suffix in (
+                "external_measured_room_sensor",
+                "external_temperature",
+                "external_temp_sensor",
+                "room_sensor",
+                "local_temperature_calibration",
+                "temperature_offset",
+                "local_temp_calibration",
+                "calibration",
+                "temp_calibration",
+            )
+        ]
+        selects += [
+            f"select.{device_name}_{suffix}"
+            for suffix in ("sensor", "temperature_sensor", "temp_sensor", "sensor_mode")
+        ]
+
+        def known(entity_id: str) -> bool:
+            return (
+                entity_reg.async_get(entity_id) is not None
+                or self.hass.states.get(entity_id) is not None
             )
 
-            for entry in er.async_entries_for_device(entity_reg, device_id):
-                if entry.domain != NUMBER_DOMAIN:
-                    continue
+        def first_match(candidates: list[str], keywords: tuple[str, ...]) -> str | None:
+            return next(
+                (
+                    entity_id
+                    for entity_id in candidates
+                    if any(kw in entity_id.lower() for kw in keywords) and known(entity_id)
+                ),
+                None,
+            )
 
-                entity_id = entry.entity_id
-                entity_name = entity_id.lower()
+        if external := first_match(numbers, ("external", "room_sensor", "measured_room")):
+            self._external_temp_entity = external
+            self._external_temp_available = True
+            self._temp_sensor_selector = first_match(selects, ("sensor",))
+            _LOGGER.info(
+                "%s: Found external temp entity %s (sensor selector: %s)",
+                self.room_name,
+                external,
+                self._temp_sensor_selector,
+            )
+            return
 
-                if any(
-                    kw in entity_name
-                    for kw in ["external", "room_sensor", "measured_room"]
-                ):
-                    state = self.hass.states.get(entity_id)
-                    if state and state.state not in ("unavailable", "unknown"):
-                        self._external_temp_entity = entity_id
-                        self._external_temp_available = True
-                        _LOGGER.info(
-                            "%s: Found external temp entity via device registry: %s",
-                            self.room_name,
-                            entity_id,
-                        )
-                        await self._async_configure_temp_sensor_selector(device_name)
-                        return
-
-                if any(
-                    kw in entity_name
-                    for kw in ["calibration", "offset", "local_temp"]
-                ):
-                    state = self.hass.states.get(entity_id)
-                    if state and state.state not in ("unavailable", "unknown"):
-                        self._calibration_entity = entity_id
-                        self._calibration_available = True
-                        _LOGGER.info(
-                            "%s: Found calibration entity via device registry: %s",
-                            self.room_name,
-                            entity_id,
-                        )
-                        return
-
-        # Fallback: try pattern matching with common naming conventions
-        external_temp_patterns = [
-            f"number.{device_name}_external_measured_room_sensor",
-            f"number.{device_name}_external_temperature",
-            f"number.{device_name}_external_temp_sensor",
-            f"number.{device_name}_room_sensor",
-        ]
-
-        for pattern in external_temp_patterns:
-            state = self.hass.states.get(pattern)
-            if state and state.state not in ("unavailable", "unknown"):
-                self._external_temp_entity = pattern
-                self._external_temp_available = True
-                _LOGGER.info(
-                    "%s: Found external temp sync entity: %s (pattern match)",
-                    self.room_name,
-                    pattern,
-                )
-                await self._async_configure_temp_sensor_selector(device_name)
-                return
-
-        calibration_patterns = [
-            f"number.{device_name}_local_temperature_calibration",
-            f"number.{device_name}_temperature_offset",
-            f"number.{device_name}_local_temp_calibration",
-            f"number.{device_name}_calibration",
-            f"number.{device_name}_temp_calibration",
-        ]
-
-        for pattern in calibration_patterns:
-            state = self.hass.states.get(pattern)
-            if state and state.state not in ("unavailable", "unknown"):
-                self._calibration_entity = pattern
-                self._calibration_available = True
-                _LOGGER.info(
-                    "%s: Found calibration entity: %s (pattern match)",
-                    self.room_name,
-                    pattern,
-                )
-                return
+        if calibration := first_match(numbers, ("calibration", "offset", "local_temp")):
+            self._calibration_entity = calibration
+            self._calibration_available = True
+            _LOGGER.info(
+                "%s: Found calibration entity %s", self.room_name, calibration
+            )
+            return
 
         _LOGGER.warning(
             "%s: Calibration sync enabled but no calibration or external temperature "
@@ -376,114 +372,56 @@ class RoomStateMachine:
             self.room_name,
             self.climate_entity,
         )
-        self._calibration_available = False
-        self._external_temp_available = False
 
-    async def _async_configure_temp_sensor_selector(self, device_name: str) -> None:
-        """Find and configure temperature sensor selector to use external sensor."""
-        selector_entity = None
+    async def _async_ensure_external_sensor_selected(self) -> bool:
+        """Switch the TRV's sensor selector to external. Returns False if not ready yet."""
+        if self._temp_sensor_selected or not self._temp_sensor_selector:
+            return True
 
-        entity_reg = er.async_get(self.hass)
-        climate_entry = entity_reg.async_get(self.climate_entity)
-
-        if climate_entry and climate_entry.device_id:
-            device_id = climate_entry.device_id
-
-            for entry in er.async_entries_for_device(entity_reg, device_id):
-                if entry.domain != SELECT_DOMAIN:
-                    continue
-
-                entity_id = entry.entity_id
-                entity_name = entity_id.lower()
-
-                if any(kw in entity_name for kw in ["sensor", "temperature_sensor"]):
-                    selector_entity = entity_id
-                    _LOGGER.debug(
-                        "%s: Found sensor selector via device registry: %s",
-                        self.room_name,
-                        entity_id,
-                    )
-                    break
-
-        if not selector_entity:
-            selector_patterns = [
-                f"select.{device_name}_sensor",
-                f"select.{device_name}_temperature_sensor",
-                f"select.{device_name}_temp_sensor",
-                f"select.{device_name}_sensor_mode",
-            ]
-
-            for pattern in selector_patterns:
-                state = self.hass.states.get(pattern)
-                if state and state.state not in ("unavailable", "unknown"):
-                    selector_entity = pattern
-                    break
-
-        if not selector_entity:
-            _LOGGER.debug(
-                "%s: No temperature sensor selector found",
-                self.room_name,
-            )
-            return
-
-        state = self.hass.states.get(selector_entity)
+        state = self.hass.states.get(self._temp_sensor_selector)
         if not state or state.state in ("unavailable", "unknown"):
-            return
+            return False
 
-        self._temp_sensor_selector = selector_entity
-        current_mode = state.state.lower()
-
-        if "external" in current_mode:
-            _LOGGER.info(
-                "%s: Temperature sensor selector %s already set to: %s",
-                self.room_name,
-                selector_entity,
-                state.state,
-            )
-            return
+        if "external" in state.state.lower():
+            self._temp_sensor_selected = True
+            return True
 
         options = state.attributes.get("options", [])
-        _LOGGER.debug(
-            "%s: Sensor selector options: %s",
-            self.room_name,
-            options,
-        )
-
-        external_option = None
-        for option in options:
-            if "external" in option.lower():
-                external_option = option
-                break
-
-        if external_option:
-            try:
-                await self.hass.services.async_call(
-                    SELECT_DOMAIN,
-                    "select_option",
-                    {
-                        ATTR_ENTITY_ID: selector_entity,
-                        "option": external_option,
-                    },
-                    blocking=True,
-                )
-                _LOGGER.info(
-                    "%s: Set temperature sensor selector %s to: %s",
-                    self.room_name,
-                    selector_entity,
-                    external_option,
-                )
-            except Exception:
-                _LOGGER.exception(
-                    "%s: Failed to set temperature sensor selector",
-                    self.room_name,
-                )
-        else:
+        external_option = next((o for o in options if "external" in o.lower()), None)
+        if external_option is None:
             _LOGGER.warning(
-                "%s: Found sensor selector %s but no 'external' option available. Options: %s",
+                "%s: Sensor selector %s has no 'external' option. Options: %s",
                 self.room_name,
-                selector_entity,
+                self._temp_sensor_selector,
                 options,
             )
+            self._temp_sensor_selected = True
+            return True
+
+        try:
+            await self.hass.services.async_call(
+                SELECT_DOMAIN,
+                "select_option",
+                {
+                    ATTR_ENTITY_ID: self._temp_sensor_selector,
+                    "option": external_option,
+                },
+                blocking=True,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "%s: Failed to set temperature sensor selector", self.room_name
+            )
+            return False
+
+        _LOGGER.info(
+            "%s: Set temperature sensor selector %s to %s",
+            self.room_name,
+            self._temp_sensor_selector,
+            external_option,
+        )
+        self._temp_sensor_selected = True
+        return True
 
     async def _async_forced_initial_sync(self) -> None:
         """Force sync external temperature to TRV on startup, bypassing thresholds."""
@@ -557,7 +495,10 @@ class RoomStateMachine:
             return
 
         ext_state = self.hass.states.get(self._external_temp_entity)
-        if not ext_state:
+        if not ext_state or ext_state.state in ("unavailable", "unknown"):
+            return
+
+        if not await self._async_ensure_external_sensor_selected():
             return
 
         min_temp = ext_state.attributes.get("min", 5)
@@ -721,6 +662,8 @@ class RoomStateMachine:
         old_needs_heat = self.needs_heat
 
         trv_temp = state.attributes.get("current_temperature")
+        self._trv_temp = trv_temp
+        self._trv_action = state.attributes.get(ATTR_HVAC_ACTION)
 
         if self.temp_sensor:
             temp_state = self.hass.states.get(self.temp_sensor)
@@ -765,6 +708,7 @@ class RoomStateMachine:
                 old_target or 0,
                 self._target_temp or 0,
             )
+            self._reset_stall()
 
         if old_is_on != self._is_on:
             _LOGGER.info(
@@ -802,8 +746,81 @@ class RoomStateMachine:
 
     @property
     def needs_heat(self) -> bool:
-        """Return True if room needs heat."""
+        """Return True if the room is below target by its own sensor."""
         return self._calling_for_heat
+
+    @property
+    def trv_satisfied(self) -> bool:
+        """Return True if the TRV itself has stopped heating, so its valve is closed.
+
+        Uses the TRV's reported hvac_action when it has one, otherwise its own
+        temperature reading against its target.
+        """
+        if self._trv_action is not None:
+            return self._trv_action == HVACAction.IDLE
+        if self._trv_temp is None or self._target_temp is None:
+            return False
+        return self._trv_temp >= self._target_temp
+
+    @property
+    def demand_stalled(self) -> bool:
+        """Return True if the room stopped warming while the zone was heating it."""
+        return self._stalled_at is not None
+
+    @property
+    def calls_for_heat(self) -> bool:
+        """Return True if this room should hold its zone thermostat on."""
+        return (
+            self._calling_for_heat
+            and self.temperature_deficit > 0
+            and not self.trv_satisfied
+            and not self.demand_stalled
+        )
+
+    def update_demand_progress(self, zone_on: bool) -> None:
+        """Track whether the room warms while the zone heats it, and flag stalls."""
+        now = dt_util.now()
+
+        if self._stalled_at is not None:
+            if self._calling_for_heat and now - self._stalled_at < STALL_RETRY:
+                return
+            if self._calling_for_heat:
+                _LOGGER.info("%s: Retrying stalled heat demand", self.room_name)
+            self._stalled_at = None
+
+        if (
+            not zone_on
+            or not self._calling_for_heat
+            or self.trv_satisfied
+            or self._current_temp is None
+        ):
+            self._progress_since = None
+            return
+
+        if (
+            self._progress_since is None
+            or self._current_temp >= self._progress_temp + STALL_MIN_RISE
+        ):
+            self._progress_since = now
+            self._progress_temp = self._current_temp
+            return
+
+        if now - self._progress_since >= STALL_TIMEOUT:
+            _LOGGER.warning(
+                "%s: Not warming - stuck at %.1f°C (target %.1f°C) after %d min of "
+                "zone heating. Ignoring its demand for %d min; check the TRV and radiator",
+                self.room_name,
+                self._current_temp,
+                self._target_temp or 0,
+                STALL_TIMEOUT.total_seconds() // 60,
+                STALL_RETRY.total_seconds() // 60,
+            )
+            self._stalled_at = now
+            self._progress_since = None
+
+    def _reset_stall(self) -> None:
+        self._stalled_at = None
+        self._progress_since = None
 
     @property
     def heat_threshold(self) -> float | None:

@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
-STARTUP_GRACE_PERIOD = 120  # Seconds to ignore min_cycle_time after startup
+STARTUP_GRACE_PERIOD = 120  # Seconds to ignore min on/off times after startup
 ZONE_BOOST = 5.0  # Degrees above current zone temperature when calling for heat
 
 
@@ -47,7 +47,8 @@ class ZoneStateMachine:
         zone_name: str,
         zone_climate: str,
         rooms: list[RoomStateMachine],
-        min_cycle_time: int = 5,
+        min_on_time: int = 10,
+        min_off_time: int = 10,
         storage: ZonalHeatingStorage | None = None,
     ) -> None:
         """Initialize zone state machine."""
@@ -55,7 +56,8 @@ class ZoneStateMachine:
         self.zone_name = zone_name
         self.zone_climate = zone_climate
         self.rooms = rooms
-        self.min_cycle_time = min_cycle_time
+        self.min_on_time = min_on_time
+        self.min_off_time = min_off_time
         self._storage = storage
 
         # State tracking
@@ -63,10 +65,10 @@ class ZoneStateMachine:
         self._last_zone_change = None
         self._zone_current_temp: float | None = None
 
-        # Startup tracking - ignore min_cycle_time during grace period
+        # Startup tracking - ignore min on/off times during grace period
         self._startup_time = None
 
-        # Retry timer for min_cycle_time blocking
+        # Retry timer for min on/off time blocking
         self._retry_timer: asyncio.TimerHandle | None = None
 
         # Track if we're currently updating zone (to detect external changes)
@@ -99,7 +101,7 @@ class ZoneStateMachine:
             )
         else:
             _LOGGER.info(
-                "%s: Startup grace period active - min_cycle_time ignored for %d seconds",
+                "%s: Startup grace period active - min on/off times ignored for %d seconds",
                 self.zone_name,
                 STARTUP_GRACE_PERIOD,
             )
@@ -308,13 +310,20 @@ class ZoneStateMachine:
 
         rooms_needing_heat = []
         for room in self.rooms:
-            if room.needs_heat and room.temperature_deficit > 0:
+            room.update_demand_progress(self._zone_is_on)
+            if room.calls_for_heat:
                 rooms_needing_heat.append(room)
                 _LOGGER.debug(
                     "%s:   > %s NEEDS HEAT (deficit: %.1f C)",
                     self.zone_name,
                     room.room_name,
                     room.temperature_deficit,
+                )
+            elif room.needs_heat and room.trv_satisfied:
+                _LOGGER.debug(
+                    "%s:   > %s below target but its TRV is satisfied - not counted",
+                    self.zone_name,
+                    room.room_name,
                 )
 
         rooms_needing_heat.sort(key=lambda r: r.temperature_deficit, reverse=True)
@@ -330,7 +339,7 @@ class ZoneStateMachine:
 
         desired_zone_on = len(rooms_needing_heat) > 0
 
-        if self._should_respect_min_cycle_time(desired_zone_on):
+        if self._should_hold_current_state(desired_zone_on):
             return
 
         await self._async_update_zone_climate(desired_zone_on, rooms_needing_heat)
@@ -368,12 +377,17 @@ class ZoneStateMachine:
         time_since_startup = (dt_util.now() - self._startup_time).total_seconds()
         return time_since_startup < STARTUP_GRACE_PERIOD
 
-    def _should_respect_min_cycle_time(self, desired_on: bool) -> bool:
-        """Check if we should respect minimum cycle time."""
+    @property
+    def current_hold_time(self) -> int:
+        """Return the minimum minutes the zone must stay in its current state."""
+        return self.min_on_time if self._zone_is_on else self.min_off_time
+
+    def _should_hold_current_state(self, desired_on: bool) -> bool:
+        """Check if the minimum on/off time stops the zone changing state yet."""
         if self._is_in_startup_grace_period():
             time_since_startup = (dt_util.now() - self._startup_time).total_seconds()
             _LOGGER.debug(
-                "%s: In startup grace period (%.0fs elapsed of %ds), bypassing min_cycle_time",
+                "%s: In startup grace period (%.0fs elapsed of %ds), bypassing min on/off times",
                 self.zone_name,
                 time_since_startup,
                 STARTUP_GRACE_PERIOD,
@@ -392,39 +406,35 @@ class ZoneStateMachine:
             )
             return False
 
+        hold_time = self.current_hold_time
         time_since_change = (
             dt_util.now() - self._last_zone_change
         ).total_seconds() / 60
 
-        if time_since_change < self.min_cycle_time:
-            time_remaining = self.min_cycle_time - time_since_change
-            time_remaining_seconds = time_remaining * 60
-
-            _LOGGER.warning(
-                "%s: MIN CYCLE TIME BLOCKING CHANGE! "
-                "Would turn zone %s but only %.1f min elapsed (min: %d min, %.1f min remaining)",
-                self.zone_name,
-                "OFF->ON" if desired_on else "ON->OFF",
-                time_since_change,
-                self.min_cycle_time,
-                time_remaining,
-            )
+        if time_since_change < hold_time:
+            time_remaining = hold_time - time_since_change
 
             _LOGGER.info(
-                "%s: Scheduling automatic retry in %.1f minutes",
+                "%s: MIN %s TIME BLOCKING CHANGE - would turn zone %s but only "
+                "%.1f min elapsed (min: %d min). Retrying in %.1f min",
                 self.zone_name,
+                "ON" if self._zone_is_on else "OFF",
+                "OFF->ON" if desired_on else "ON->OFF",
+                time_since_change,
+                hold_time,
                 time_remaining,
             )
             self._retry_timer = self.hass.loop.call_later(
-                time_remaining_seconds,
+                time_remaining * 60,
                 lambda: self.hass.async_create_task(self._async_debounced_evaluate()),
             )
 
             return True
 
         _LOGGER.debug(
-            "%s: Min cycle time elapsed (%.1f min), allowing change",
+            "%s: Min %s time elapsed (%.1f min), allowing change",
             self.zone_name,
+            "on" if self._zone_is_on else "off",
             time_since_change,
         )
         return False
@@ -552,7 +562,7 @@ class ZoneStateMachine:
             )
 
         _LOGGER.info(
-            "%s: Zone change complete - now %s (min_cycle_time reset)",
+            "%s: Zone change complete - now %s",
             self.zone_name,
             "ON" if turn_on else "OFF",
         )

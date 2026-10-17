@@ -216,6 +216,10 @@ class ZonalHeatingCard extends LitElement {
         background: rgba(33, 150, 243, 0.08);
         border: 1px solid rgba(33, 150, 243, 0.2);
       }
+      .room.stalled {
+        background: rgba(244, 67, 54, 0.08);
+        border: 1px solid rgba(244, 67, 54, 0.25);
+      }
       .room.off {
         background: rgba(158, 158, 158, 0.06);
         border: 1px solid rgba(158, 158, 158, 0.15);
@@ -247,6 +251,10 @@ class ZonalHeatingCard extends LitElement {
       .room-indicator.window-open {
         background: rgba(33, 150, 243, 0.2);
         color: var(--info-color, #2196f3);
+      }
+      .room-indicator.stalled {
+        background: rgba(244, 67, 54, 0.2);
+        color: var(--error-color, #f44336);
       }
       .room-indicator.off {
         background: rgba(158, 158, 158, 0.15);
@@ -442,7 +450,7 @@ class ZonalHeatingCard extends LitElement {
     };
 
     const detailedRooms = attrs.detailed_rooms || [];
-    const needingHeat = detailedRooms.filter((r) => r.needs_heat && r.is_on);
+    const needingHeat = detailedRooms.filter((r) => r.calls_for_heat && r.is_on);
     const totalRooms = detailedRooms.length;
 
     let summary = "";
@@ -557,6 +565,12 @@ class ZonalHeatingCard extends LitElement {
       status = "window-open";
       icon = "mdi:window-open-variant";
       statusLabel = room.window_confirmed ? "Window open" : "Detecting";
+    } else if (room.needs_heat && room.demand_stalled) {
+      status = "stalled";
+      icon = "mdi:thermometer-alert";
+      statusLabel = "Not warming";
+    } else if (room.needs_heat && room.trv_satisfied) {
+      statusLabel = "TRV satisfied";
     } else if (room.needs_heat) {
       status = "needs-heat";
       icon = "mdi:fire";
@@ -598,6 +612,12 @@ class ZonalHeatingCard extends LitElement {
     if (!room.is_on) return "Climate entity is off";
     if (room.window_confirmed) return "Window confirmed open - heat paused";
     if (room.window_open) return "Window detected - confirming...";
+    if (room.needs_heat && room.demand_stalled) {
+      return "Not warming while the zone heats - check the TRV and radiator";
+    }
+    if (room.needs_heat && room.trv_satisfied) {
+      return "Below target, but the TRV has closed its valve";
+    }
     if (room.needs_heat) {
       const deficit = room.deficit || 0;
       return `${deficit.toFixed(1)}° below target`;
@@ -608,7 +628,8 @@ class ZonalHeatingCard extends LitElement {
   _renderDebug(attrs) {
     const items = [
       { key: "zone_is_on", value: attrs.zone_is_on },
-      { key: "min_cycle_time", value: `${attrs.min_cycle_time_minutes} min` },
+      { key: "min_on_time", value: `${attrs.min_on_time_minutes} min` },
+      { key: "min_off_time", value: `${attrs.min_off_time_minutes} min` },
       {
         key: "time_since_change",
         value:

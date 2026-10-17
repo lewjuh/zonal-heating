@@ -19,7 +19,8 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_CALIBRATION_SYNC,
-    CONF_MIN_CYCLE_TIME,
+    CONF_MIN_OFF_TIME,
+    CONF_MIN_ON_TIME,
     CONF_PRIORITY,
     CONF_ROOMS,
     CONF_SETTINGS,
@@ -32,7 +33,8 @@ from .const import (
     CONF_ZONE_THERMOSTAT,
     CONF_ZONES,
     DEFAULT_CALIBRATION_SYNC,
-    DEFAULT_MIN_CYCLE_TIME,
+    DEFAULT_MIN_OFF_TIME,
+    DEFAULT_MIN_ON_TIME,
     DEFAULT_PRIORITY,
     DEFAULT_TEMP_DIFFERENTIAL,
     DEFAULT_WINDOW_DELAY,
@@ -269,7 +271,8 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_ZONES: self._zones,
                 CONF_SETTINGS: {
                     CONF_TEMP_DIFFERENTIAL: user_input[CONF_TEMP_DIFFERENTIAL],
-                    CONF_MIN_CYCLE_TIME: user_input[CONF_MIN_CYCLE_TIME],
+                    CONF_MIN_ON_TIME: user_input[CONF_MIN_ON_TIME],
+                    CONF_MIN_OFF_TIME: user_input[CONF_MIN_OFF_TIME],
                     CONF_WINDOW_DELAY: user_input[CONF_WINDOW_DELAY],
                     CONF_CALIBRATION_SYNC: user_input.get(
                         CONF_CALIBRATION_SYNC, DEFAULT_CALIBRATION_SYNC
@@ -291,8 +294,12 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         default=DEFAULT_TEMP_DIFFERENTIAL,
                     ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=5.0)),
                     vol.Optional(
-                        CONF_MIN_CYCLE_TIME,
-                        default=DEFAULT_MIN_CYCLE_TIME,
+                        CONF_MIN_ON_TIME,
+                        default=DEFAULT_MIN_ON_TIME,
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
+                    vol.Optional(
+                        CONF_MIN_OFF_TIME,
+                        default=DEFAULT_MIN_OFF_TIME,
                     ): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
                     vol.Optional(
                         CONF_WINDOW_DELAY,
@@ -601,7 +608,8 @@ class ZonalHeatingOptionsFlow(config_entries.OptionsFlow):
                 title="",
                 data={
                     CONF_TEMP_DIFFERENTIAL: user_input[CONF_TEMP_DIFFERENTIAL],
-                    CONF_MIN_CYCLE_TIME: user_input[CONF_MIN_CYCLE_TIME],
+                    CONF_MIN_ON_TIME: user_input[CONF_MIN_ON_TIME],
+                    CONF_MIN_OFF_TIME: user_input[CONF_MIN_OFF_TIME],
                     CONF_WINDOW_DELAY: user_input[CONF_WINDOW_DELAY],
                     CONF_CALIBRATION_SYNC: user_input.get(
                         CONF_CALIBRATION_SYNC, DEFAULT_CALIBRATION_SYNC
@@ -626,9 +634,15 @@ class ZonalHeatingOptionsFlow(config_entries.OptionsFlow):
                         ),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=5.0)),
                     vol.Optional(
-                        CONF_MIN_CYCLE_TIME,
+                        CONF_MIN_ON_TIME,
                         default=current_settings.get(
-                            CONF_MIN_CYCLE_TIME, DEFAULT_MIN_CYCLE_TIME
+                            CONF_MIN_ON_TIME, DEFAULT_MIN_ON_TIME
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
+                    vol.Optional(
+                        CONF_MIN_OFF_TIME,
+                        default=current_settings.get(
+                            CONF_MIN_OFF_TIME, DEFAULT_MIN_OFF_TIME
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
                     vol.Optional(
