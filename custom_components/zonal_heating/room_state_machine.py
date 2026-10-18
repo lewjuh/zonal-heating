@@ -32,6 +32,8 @@ _LOGGER = logging.getLogger(__name__)
 STALL_TIMEOUT = timedelta(minutes=60)  # Zone-on time allowed without the room warming
 STALL_MIN_RISE = 0.2  # Degrees the room must gain within STALL_TIMEOUT
 STALL_RETRY = timedelta(hours=2)  # How long a stalled room is ignored before retrying
+EXTERNAL_CONFIRM_TIMEOUT = timedelta(minutes=10)  # Wait for the TRV to adopt the external temp
+EXTERNAL_MATCH_TOLERANCE = 0.3  # TRV reading this close to the sent temp counts as adopted
 
 
 class RoomStateMachine:
@@ -87,6 +89,8 @@ class RoomStateMachine:
         self._external_temp_entity: str | None = None
         self._last_external_temp_sync: float | None = None
         self._external_temp_available = False
+        self._external_pending_since = None
+        self._external_confirmed = False
 
         # Temperature sensor selector (some TRVs need this set to "external")
         self._temp_sensor_selector: str | None = None
@@ -346,19 +350,23 @@ class RoomStateMachine:
                 None,
             )
 
+        calibration = first_match(numbers, ("calibration", "offset", "local_temp"))
+
         if external := first_match(numbers, ("external", "room_sensor", "measured_room")):
             self._external_temp_entity = external
             self._external_temp_available = True
+            self._calibration_entity = calibration
             self._temp_sensor_selector = first_match(selects, ("sensor",))
             _LOGGER.info(
-                "%s: Found external temp entity %s (sensor selector: %s)",
+                "%s: Found external temp entity %s (sensor selector: %s, fallback calibration: %s)",
                 self.room_name,
                 external,
                 self._temp_sensor_selector,
+                calibration,
             )
             return
 
-        if calibration := first_match(numbers, ("calibration", "offset", "local_temp")):
+        if calibration:
             self._calibration_entity = calibration
             self._calibration_available = True
             _LOGGER.info(
@@ -483,6 +491,18 @@ class RoomStateMachine:
             self._external_temp_available,
             self._calibration_available,
         )
+        if self._external_temp_available and self._external_input_ignored(trv_temp):
+            _LOGGER.warning(
+                "%s: TRV has not adopted the external temperature after %d min, "
+                "falling back to calibration offset sync via %s",
+                self.room_name,
+                EXTERNAL_CONFIRM_TIMEOUT.total_seconds() // 60,
+                self._calibration_entity,
+            )
+            self._external_temp_available = False
+            self._calibration_available = True
+            self._last_calibration = None
+
         if self._external_temp_available:
             await self._async_sync_external_temp(external_temp)
         elif self._calibration_available:
@@ -492,6 +512,37 @@ class RoomStateMachine:
                 "%s: No sync method available",
                 self.room_name,
             )
+
+    def _external_input_ignored(self, trv_temp: float) -> bool:
+        """Return True once the TRV has failed to adopt the external temperature in time.
+
+        A TRV with a sensor selector must report the remote option; one without must
+        show a reading that matches the temperature sent to it.
+        """
+        if self._external_confirmed or self._external_pending_since is None:
+            return False
+
+        if self._temp_sensor_selector:
+            state = self.hass.states.get(self._temp_sensor_selector)
+            value = state.state.lower() if state else ""
+            adopted = (
+                any(kw in value for kw in ("external", "remote")) and "offline" not in value
+            )
+        else:
+            adopted = (
+                self._last_external_temp_sync is not None
+                and abs(trv_temp - self._last_external_temp_sync) <= EXTERNAL_MATCH_TOLERANCE
+            )
+
+        if adopted:
+            self._external_confirmed = True
+            self._external_pending_since = None
+            return False
+
+        return (
+            self._calibration_entity is not None
+            and dt_util.now() - self._external_pending_since >= EXTERNAL_CONFIRM_TIMEOUT
+        )
 
     async def _async_sync_external_temp(self, external_temp: float) -> None:
         """Sync external temperature directly to TRV."""
@@ -543,6 +594,8 @@ class RoomStateMachine:
                 external_temp,
             )
             self._last_external_temp_sync = external_temp
+            if self._external_pending_since is None and not self._external_confirmed:
+                self._external_pending_since = dt_util.now()
         except Exception:
             _LOGGER.exception(
                 "%s: Failed to sync external temperature",

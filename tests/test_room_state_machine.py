@@ -367,3 +367,70 @@ async def test_target_change_clears_stall(
     await room.async_update_climate_state()
     assert not room.demand_stalled
     await room.async_stop()
+
+
+async def _trvzb_room(hass: HomeAssistant) -> tuple[RoomStateMachine, list, list]:
+    ext_entity = "number.bedroom_trv_external_temperature_input"
+    cal_entity = "number.bedroom_trv_local_temperature_calibration"
+    selector = "select.bedroom_trv_temperature_sensor_select"
+    _register_trv_device(
+        hass,
+        ("number", "bedroom_trv_local_temperature_calibration"),
+        ("number", "bedroom_trv_external_temperature_input"),
+        ("select", "bedroom_trv_temperature_sensor_select"),
+    )
+    set_value = async_mock_service(hass, "number", "set_value")
+    select_option = async_mock_service(hass, "select", "select_option")
+    hass.states.async_set(ext_entity, "unknown", {"min": 0.0, "max": 99.9})
+    hass.states.async_set(cal_entity, "-1.8", {"min": -7.0, "max": 7.0})
+    hass.states.async_set(
+        selector,
+        "unknown",
+        {"options": ["local_temperature", "remote_temperature", "remote_source_offline"]},
+    )
+    _set_trv(hass, 18.3, target=19.0)
+    room = RoomStateMachine(hass, "Bedroom", TRV, [], calibration_sync=True)
+    room.temp_sensor = "sensor.bedroom_temp"
+    await room._async_discover_sync_entities()
+    return room, set_value, select_option
+
+
+async def test_falls_back_to_calibration_when_trv_ignores_external_input(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """A TRV that never switches to the remote sensor gets its offset synced instead."""
+    room, set_value, _ = await _trvzb_room(hass)
+
+    await room._async_sync_temperature(17.7, 18.3)
+    assert set_value[-1].data["entity_id"].endswith("external_temperature_input")
+
+    freezer.tick(timedelta(minutes=11))
+    _set_trv(hass, 18.3, target=19.0)
+    await room._async_sync_temperature(17.6, 18.3)
+
+    assert set_value[-1].data == {
+        "entity_id": "number.bedroom_trv_local_temperature_calibration",
+        "value": -2.5,
+    }
+
+
+async def test_no_fallback_once_trv_reports_remote_sensor(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """A TRV whose selector reports the remote sensor keeps receiving the external temp."""
+    room, set_value, _ = await _trvzb_room(hass)
+
+    await room._async_sync_temperature(17.7, 18.3)
+    hass.states.async_set(
+        "select.bedroom_trv_temperature_sensor_select",
+        "remote_temperature",
+        {"options": ["local_temperature", "remote_temperature", "remote_source_offline"]},
+    )
+
+    freezer.tick(timedelta(minutes=11))
+    await room._async_sync_temperature(17.5, 17.7)
+
+    assert set_value[-1].data == {
+        "entity_id": "number.bedroom_trv_external_temperature_input",
+        "value": 17.5,
+    }
