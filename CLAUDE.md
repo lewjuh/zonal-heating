@@ -47,8 +47,8 @@ Only **4 paths** write to TRVs:
 
 1. **User sets temperature** via virtual entity -> forwards to TRV (`climate.py`)
 2. **Startup sync** pushes restored target and on/off mode to TRV; a TRV in `auto` or another active mode is not forced to `heat` (`climate.py`)
-3. **Calibration sync** writes external temp/offset to TRV number entity (`room_state_machine.py`) - not a target temp write. Sync entities are discovered from the entity registry, never from current states: Z2M entities are `unknown` for ~45 s after HA starts, and state-based discovery silently disabled calibration in 1.8.x
-4. **Zone thermostat** gets set to heat at current+5, capped at its `max_temp`, when turning on (`zone_state_machine.py`)
+3. **Calibration sync** writes external temp/offset to TRV number entity (`room_state_machine.py`) - not a target temp write. Sync entities are discovered from the entity registry, never from current states: Z2M entities are `unknown` for ~45 s after HA starts, and state-based discovery silently disabled calibration in 1.8.x. Sonoff TRVZB's external temperature input and sensor selector stay `unknown` until written, so sync writes them regardless (selector option `remote_temperature`); waiting for them to become known left calibration dead in 1.9.0
+4. **Zone thermostat** gets set to heat at current+5, capped at its `max_temp`, when turning on; a zone already in `heat` whose setpoint is less than 1C above its current temperature (its own schedule or a manual change) is re-boosted the same way (`zone_state_machine.py`)
 
 ### Key Design Decisions
 
@@ -189,6 +189,8 @@ When debugging, search logs for:
 - `"ZONE EVALUATION"` - zone decision points
 - `"MIN ON TIME"` / `"MIN OFF TIME"` - cycling protection
 - `"Not warming"` - stall guard dropped a room's demand
+- `"ZONE TARGET TOO LOW"` - zone was in heat but its setpoint was too low to fire, so it was raised
+- `"ZONE TARGET TOO LOW"` - zone was in heat but its setpoint was too low to fire, so it was raised
 - `"Window opened"` - window detection
 - `"NEEDS HEAT"` - room heating decisions
 

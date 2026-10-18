@@ -244,6 +244,37 @@ async def test_external_input_preferred_and_selector_set_once_ready(
     assert set_value[0].data == {"entity_id": ext_entity, "value": 20.5}
 
 
+async def test_sonoff_trvzb_never_reported_entities_are_still_synced(
+    hass: HomeAssistant,
+) -> None:
+    """A TRVZB's external input and selector stay unknown until written, so sync writes them anyway."""
+    ext_entity = "number.bedroom_trv_external_temperature_input"
+    selector = "select.bedroom_trv_temperature_sensor_select"
+    _register_trv_device(
+        hass,
+        ("number", "bedroom_trv_local_temperature_calibration"),
+        ("number", "bedroom_trv_external_temperature_input"),
+        ("select", "bedroom_trv_temperature_sensor_select"),
+    )
+    set_value = async_mock_service(hass, "number", "set_value")
+    select_option = async_mock_service(hass, "select", "select_option")
+    hass.states.async_set(ext_entity, "unknown", {"min": 0.0, "max": 99.9})
+    hass.states.async_set(
+        selector,
+        "unknown",
+        {"options": ["local_temperature", "remote_temperature", "remote_source_offline"]},
+    )
+    _set_trv(hass, 18.3)
+
+    room = RoomStateMachine(hass, "Bedroom", TRV, [], calibration_sync=True)
+    room.temp_sensor = "sensor.bedroom_temp"
+    await room._async_discover_sync_entities()
+    await room._async_sync_external_temp(17.7)
+
+    assert select_option[0].data == {"entity_id": selector, "option": "remote_temperature"}
+    assert set_value[0].data == {"entity_id": ext_entity, "value": 17.7}
+
+
 async def test_room_not_counted_when_trv_reports_idle(hass: HomeAssistant) -> None:
     """A room below target whose TRV has closed its valve does not hold the zone on."""
     hass.states.async_set("sensor.bedroom_temp", "18.0")

@@ -36,6 +36,7 @@ _LOGGER = logging.getLogger(__name__)
 
 STARTUP_GRACE_PERIOD = 120  # Seconds to ignore min on/off times after startup
 ZONE_BOOST = 5.0  # Degrees above current zone temperature when calling for heat
+ZONE_MIN_LEAD = 1.0  # Below this lead over current temperature a heating zone is re-boosted
 
 
 class ZoneStateMachine:
@@ -284,6 +285,8 @@ class ZoneStateMachine:
             )
             self._last_zone_change = dt_util.now()
             self.hass.async_create_task(self._async_debounced_evaluate())
+        elif self._zone_is_on and not self._updating_zone and self._target_too_low(state):
+            self.hass.async_create_task(self._async_debounced_evaluate())
 
     async def _async_debounced_evaluate(self) -> None:
         """Safe wrapper for debounced zone evaluation."""
@@ -467,6 +470,9 @@ class ZoneStateMachine:
         )
 
         if not needs_change:
+            if turn_on and self._target_too_low(zone_state):
+                await self._async_reboost_zone(zone_state)
+                return
             _LOGGER.debug(
                 "%s: No change needed - zone already %s",
                 self.zone_name,
@@ -566,6 +572,48 @@ class ZoneStateMachine:
             self.zone_name,
             "ON" if turn_on else "OFF",
         )
+
+    @classmethod
+    def _target_too_low(cls, zone_state) -> bool:
+        """Return True if a zone in heat has a setpoint too low to fire the boiler."""
+        if zone_state.state != HVACMode.HEAT:
+            return False
+        zone_temp = zone_state.attributes.get("current_temperature")
+        if zone_temp is None:
+            return False
+        target = zone_state.attributes.get(ATTR_TEMPERATURE)
+        if target is None:
+            return True
+        return target < zone_temp + ZONE_MIN_LEAD and cls._boost_target(zone_state) > target
+
+    async def _async_reboost_zone(self, zone_state) -> None:
+        """Raise the setpoint of a zone that is in heat but not heating."""
+        target_temp = self._boost_target(zone_state)
+        _LOGGER.info(
+            "%s: ZONE TARGET TOO LOW - zone is in heat at %s C with current %s C, raising to %.1f C",
+            self.zone_name,
+            zone_state.attributes.get(ATTR_TEMPERATURE),
+            zone_state.attributes.get("current_temperature"),
+            target_temp,
+        )
+        self._updating_zone = True
+        try:
+            await self.hass.services.async_call(
+                CLIMATE_DOMAIN,
+                SERVICE_SET_TEMPERATURE,
+                {
+                    ATTR_ENTITY_ID: self.zone_climate,
+                    ATTR_TEMPERATURE: target_temp,
+                },
+                blocking=True,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "%s: Failed to raise zone target - will retry on next evaluation",
+                self.zone_name,
+            )
+        finally:
+            self._updating_zone = False
 
     @staticmethod
     def _boost_target(zone_state) -> float:

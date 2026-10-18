@@ -188,3 +188,49 @@ async def test_zone_ignores_room_whose_trv_is_satisfied(hass: HomeAssistant) -> 
     assert room.needs_heat
     assert not set_mode and not set_temp
     await zone.async_stop()
+
+async def test_zone_in_heat_with_low_target_is_reboosted(hass: HomeAssistant) -> None:
+    """A zone already in heat but with a setpoint below its temperature is raised."""
+    set_mode = async_mock_service(hass, "climate", "set_hvac_mode")
+    set_temp = async_mock_service(hass, "climate", "set_temperature")
+    hass.states.async_set(
+        ZONE, "heat", {"current_temperature": 20.0, "temperature": 18.0, "max_temp": 35}
+    )
+
+    zone = await _make_zone(hass, room_temp=18.0)
+
+    assert not set_mode
+    assert set_temp
+    assert set_temp[-1].data == {"entity_id": ZONE, "temperature": 25.0}
+    await zone.async_stop()
+
+async def test_zone_target_drop_while_heating_triggers_reboost(hass: HomeAssistant) -> None:
+    """The zone's own schedule lowering its setpoint mid-demand is undone."""
+    async_mock_service(hass, "climate", "set_hvac_mode")
+    set_temp = async_mock_service(hass, "climate", "set_temperature")
+    hass.states.async_set(
+        ZONE, "heat", {"current_temperature": 20.0, "temperature": 25.0, "max_temp": 35}
+    )
+    zone = await _make_zone(hass, room_temp=18.0)
+    assert not set_temp
+
+    hass.states.async_set(
+        ZONE, "heat", {"current_temperature": 20.0, "temperature": 16.0, "max_temp": 35}
+    )
+    await hass.async_block_till_done()
+
+    assert set_temp[-1].data == {"entity_id": ZONE, "temperature": 25.0}
+    await zone.async_stop()
+
+async def test_zone_in_heat_with_adequate_target_is_left_alone(hass: HomeAssistant) -> None:
+    """No calls are made to a zone already heating towards a high enough target."""
+    set_mode = async_mock_service(hass, "climate", "set_hvac_mode")
+    set_temp = async_mock_service(hass, "climate", "set_temperature")
+    hass.states.async_set(
+        ZONE, "heat", {"current_temperature": 20.0, "temperature": 22.0, "max_temp": 35}
+    )
+
+    zone = await _make_zone(hass, room_temp=18.0)
+
+    assert not set_mode and not set_temp
+    await zone.async_stop()

@@ -379,15 +379,25 @@ class RoomStateMachine:
             return True
 
         state = self.hass.states.get(self._temp_sensor_selector)
-        if not state or state.state in ("unavailable", "unknown"):
+        if not state or state.state == "unavailable":
             return False
 
-        if "external" in state.state.lower():
+        options = state.attributes.get("options", [])
+        if not options:
+            return False
+        external_option = next(
+            (
+                o
+                for o in options
+                if any(kw in o.lower() for kw in ("external", "remote"))
+                and "offline" not in o.lower()
+            ),
+            None,
+        )
+        if state.state == external_option:
             self._temp_sensor_selected = True
             return True
 
-        options = state.attributes.get("options", [])
-        external_option = next((o for o in options if "external" in o.lower()), None)
         if external_option is None:
             _LOGGER.warning(
                 "%s: Sensor selector %s has no 'external' option. Options: %s",
@@ -495,7 +505,7 @@ class RoomStateMachine:
             return
 
         ext_state = self.hass.states.get(self._external_temp_entity)
-        if not ext_state or ext_state.state in ("unavailable", "unknown"):
+        if not ext_state or ext_state.state == "unavailable":
             return
 
         if not await self._async_ensure_external_sensor_selected():
