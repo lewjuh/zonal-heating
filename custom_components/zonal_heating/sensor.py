@@ -207,6 +207,7 @@ class ZoneDiagnosticSensor(SensorEntity):
         for room in coordinator.rooms:
             room_info = {
                 "name": room.room_name,
+                "trv_entity": room.climate_entity,
                 "needs_heat": room.needs_heat,
                 "calls_for_heat": room.calls_for_heat,
                 "trv_satisfied": room.trv_satisfied,

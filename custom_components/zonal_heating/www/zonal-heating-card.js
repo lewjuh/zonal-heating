@@ -4,18 +4,23 @@ const LitElement = Object.getPrototypeOf(
 const html = LitElement.prototype.html;
 const css = LitElement.prototype.css;
 
+const SEND_DELAY_MS = 1200;
+
 class ZonalHeatingCard extends LitElement {
   static get properties() {
     return {
       hass: { type: Object },
       config: { type: Object },
-      _showDebug: { type: Boolean },
+      _pending: { type: Object },
+      _showDetails: { type: Boolean },
     };
   }
 
   constructor() {
     super();
-    this._showDebug = false;
+    this._pending = {};
+    this._timers = {};
+    this._showDetails = false;
   }
 
   static getConfigElement() {
@@ -31,363 +36,245 @@ class ZonalHeatingCard extends LitElement {
       throw new Error("Please define a zone_sensor");
     }
     this.config = config;
-    this._showDebug = config.show_debug || false;
+    this._showDetails = config.show_debug || false;
   }
 
   getCardSize() {
-    return 3;
+    const zone = this.hass?.states[this.config.zone_sensor];
+    return 2 + (zone?.attributes.detailed_rooms?.length || 0);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    Object.values(this._timers).forEach(clearTimeout);
+    this._timers = {};
   }
 
   static get styles() {
     return css`
       :host {
         display: block;
+        container-type: inline-size;
+        --zh-heat: var(--state-climate-heat-color, #ff8100);
+        --zh-ok: var(--success-color, #43a047);
+        --zh-window: var(--info-color, #039be5);
+        --zh-warn: var(--warning-color, #ffa600);
+        --zh-error: var(--error-color, #db4437);
+        --zh-off: var(--disabled-text-color, #9e9e9e);
+        --zh-radius: var(--bubble-border-radius, 32px);
+        --zh-bg: var(
+          --bubble-main-background-color,
+          var(--ha-card-background, var(--card-background-color))
+        );
+        --zh-sub-bg: var(
+          --bubble-secondary-background-color,
+          var(--secondary-background-color)
+        );
+        --zh-icon-bg: var(
+          --bubble-icon-background-color,
+          var(--secondary-background-color)
+        );
       }
       ha-card {
-        padding: 16px;
-        overflow: hidden;
-      }
-
-      /* ---- Card Header ---- */
-      .card-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 14px;
-      }
-      .card-title {
-        font-size: 1.1em;
-        font-weight: 500;
-        color: var(--primary-text-color);
-      }
-
-      /* ---- Zone Banner ---- */
-      .zone-banner {
-        display: flex;
-        align-items: center;
-        padding: 16px;
-        border-radius: 12px;
-        margin-bottom: 14px;
-        gap: 14px;
-      }
-      .zone-banner.heating {
-        background: linear-gradient(
-          135deg,
-          rgba(255, 152, 0, 0.18) 0%,
-          rgba(255, 87, 34, 0.18) 100%
-        );
-        border: 1.5px solid rgba(255, 152, 0, 0.4);
-      }
-      .zone-banner.idle {
-        background: linear-gradient(
-          135deg,
-          rgba(76, 175, 80, 0.12) 0%,
-          rgba(0, 150, 136, 0.12) 100%
-        );
-        border: 1.5px solid rgba(76, 175, 80, 0.3);
-      }
-      .zone-banner.unavailable {
-        background: rgba(158, 158, 158, 0.12);
-        border: 1.5px solid rgba(158, 158, 158, 0.3);
-      }
-
-      .zone-icon {
-        width: 42px;
-        height: 42px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 50%;
-        flex-shrink: 0;
-      }
-      .zone-icon ha-icon {
-        --mdc-icon-size: 24px;
-        width: 24px;
-        height: 24px;
-      }
-      .zone-icon.heating {
-        background: rgba(255, 152, 0, 0.25);
-        color: var(--warning-color, #ff9800);
-      }
-      .zone-icon.idle {
-        background: rgba(76, 175, 80, 0.2);
-        color: var(--success-color, #4caf50);
-      }
-      .zone-icon.unavailable {
-        background: rgba(158, 158, 158, 0.2);
-        color: var(--disabled-color, #9e9e9e);
-      }
-
-      .zone-info {
-        flex: 1;
-        min-width: 0;
-      }
-      .zone-state {
-        font-size: 1.05em;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-      }
-      .zone-state.heating {
-        color: var(--warning-color, #ff9800);
-      }
-      .zone-state.idle {
-        color: var(--success-color, #4caf50);
-      }
-      .zone-state.unavailable {
-        color: var(--disabled-color, #9e9e9e);
-      }
-      .zone-summary {
-        font-size: 0.85em;
-        color: var(--secondary-text-color);
-        margin-top: 2px;
-      }
-      .zone-temp {
-        font-size: 1.4em;
-        font-weight: 700;
-        flex-shrink: 0;
-        color: var(--primary-text-color);
-      }
-
-      /* ---- Alert Chips ---- */
-      .alerts {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-        margin-bottom: 14px;
-      }
-      .alert-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        padding: 5px 10px;
-        border-radius: 16px;
-        font-size: 0.78em;
-        font-weight: 500;
-      }
-      .alert-chip ha-icon {
-        --mdc-icon-size: 14px;
-        width: 14px;
-        height: 14px;
-      }
-      .alert-chip.warning {
-        background: rgba(255, 152, 0, 0.12);
-        color: var(--warning-color, #ff9800);
-        border: 1px solid rgba(255, 152, 0, 0.3);
-      }
-      .alert-chip.info {
-        background: rgba(33, 150, 243, 0.12);
-        color: var(--info-color, #2196f3);
-        border: 1px solid rgba(33, 150, 243, 0.3);
-      }
-      .alert-chip.neutral {
-        background: rgba(158, 158, 158, 0.1);
-        color: var(--secondary-text-color);
-        border: 1px solid var(--divider-color);
-      }
-      .alert-chip.success {
-        background: rgba(76, 175, 80, 0.12);
-        color: var(--success-color, #4caf50);
-        border: 1px solid rgba(76, 175, 80, 0.3);
-      }
-
-      /* ---- Room Cards ---- */
-      .rooms {
+        background: none;
+        border: none;
+        box-shadow: none;
         display: flex;
         flex-direction: column;
         gap: 8px;
       }
-      .room {
-        display: flex;
-        align-items: center;
-        padding: 14px 16px;
-        border-radius: 10px;
-        gap: 12px;
-      }
-      .room.needs-heat {
-        background: rgba(255, 152, 0, 0.1);
-        border: 1px solid rgba(255, 152, 0, 0.25);
-      }
-      .room.satisfied {
-        background: rgba(76, 175, 80, 0.06);
-        border: 1px solid rgba(76, 175, 80, 0.15);
-      }
-      .room.window-open {
-        background: rgba(33, 150, 243, 0.08);
-        border: 1px solid rgba(33, 150, 243, 0.2);
-      }
-      .room.stalled {
-        background: rgba(244, 67, 54, 0.08);
-        border: 1px solid rgba(244, 67, 54, 0.25);
-      }
-      .room.off {
-        background: rgba(158, 158, 158, 0.06);
-        border: 1px solid rgba(158, 158, 158, 0.15);
-        opacity: 0.65;
-      }
 
-      .room-indicator {
-        width: 34px;
-        height: 34px;
+      .bubble {
+        position: relative;
         display: flex;
         align-items: center;
-        justify-content: center;
+        gap: 10px;
+        padding: 6px;
+        border-radius: var(--zh-radius);
+        background: var(--zh-bg);
+        overflow: hidden;
+        isolation: isolate;
+      }
+      .bubble.lit::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        background: color-mix(in srgb, var(--zh-colour) 18%, transparent);
+      }
+      .icon {
+        flex: none;
+        width: 44px;
+        height: 44px;
         border-radius: 50%;
-        flex-shrink: 0;
+        display: grid;
+        place-items: center;
+        color: var(--zh-colour);
+        background: color-mix(in srgb, var(--zh-colour) 22%, var(--zh-icon-bg));
+        --mdc-icon-size: 24px;
       }
-      .room-indicator ha-icon {
-        --mdc-icon-size: 18px;
-        width: 18px;
-        height: 18px;
-      }
-      .room-indicator.needs-heat {
-        background: rgba(255, 152, 0, 0.2);
-        color: var(--warning-color, #ff9800);
-      }
-      .room-indicator.satisfied {
-        background: rgba(76, 175, 80, 0.2);
-        color: var(--success-color, #4caf50);
-      }
-      .room-indicator.window-open {
-        background: rgba(33, 150, 243, 0.2);
-        color: var(--info-color, #2196f3);
-      }
-      .room-indicator.stalled {
-        background: rgba(244, 67, 54, 0.2);
-        color: var(--error-color, #f44336);
-      }
-      .room-indicator.off {
-        background: rgba(158, 158, 158, 0.15);
-        color: var(--disabled-color, #9e9e9e);
-      }
-
-      .room-body {
+      .text {
         flex: 1;
         min-width: 0;
+        padding-left: 2px;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
       }
-      .room-name-row {
+      .name {
+        font-size: 15px;
+        font-weight: 600;
+        line-height: 1.25;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .state {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        column-gap: 6px;
+        font-size: 13px;
+        line-height: 1.3;
+        color: var(--secondary-text-color);
+      }
+      .state .temp {
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--primary-text-color);
+        font-variant-numeric: tabular-nums;
+      }
+      .state .label {
+        font-weight: 500;
+        color: var(--zh-colour);
+      }
+
+      .zone {
+        padding: 8px;
+        min-height: 72px;
+        box-sizing: border-box;
+      }
+      .zone .icon {
+        width: 56px;
+        height: 56px;
+        --mdc-icon-size: 30px;
+      }
+      .zone .name {
+        font-size: 18px;
+      }
+      .zone .state .label {
+        font-size: 15px;
+      }
+      .why {
+        color: var(--secondary-text-color);
+      }
+      .pill {
+        flex: none;
         display: flex;
         align-items: center;
-        gap: 8px;
-      }
-      .room-name {
-        font-size: 0.95em;
+        gap: 6px;
+        height: 40px;
+        padding: 0 14px;
+        margin-right: 4px;
+        border-radius: var(--zh-radius);
+        background: var(--zh-sub-bg);
+        font-size: 14px;
         font-weight: 500;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        --mdc-icon-size: 18px;
       }
-      .room-status-badge {
-        font-size: 0.65em;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        padding: 2px 7px;
-        border-radius: 4px;
-        flex-shrink: 0;
-        white-space: nowrap;
-      }
-      .room-status-badge.needs-heat {
-        background: rgba(255, 152, 0, 0.2);
-        color: var(--warning-color, #ff9800);
-      }
-      .room-status-badge.satisfied {
-        background: rgba(76, 175, 80, 0.15);
-        color: var(--success-color, #4caf50);
-      }
-      .room-status-badge.window-open {
-        background: rgba(33, 150, 243, 0.15);
-        color: var(--info-color, #2196f3);
-      }
-      .room-status-badge.off {
-        background: rgba(158, 158, 158, 0.12);
-        color: var(--disabled-color, #9e9e9e);
+      .pill ha-icon {
+        color: var(--secondary-text-color);
       }
 
-      .room-reason {
-        font-size: 0.78em;
-        color: var(--secondary-text-color);
-        margin-top: 3px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+      .room.off .icon,
+      .room.off .text {
+        opacity: 0.5;
       }
 
-      .room-temps {
-        text-align: right;
-        flex-shrink: 0;
-      }
-      .room-current-temp {
-        font-size: 1.5em;
-        font-weight: 700;
-        line-height: 1.1;
-        color: var(--primary-text-color);
-      }
-      .room.needs-heat .room-current-temp {
-        color: var(--warning-color, #ff9800);
-      }
-      .room.window-open .room-current-temp {
-        color: var(--info-color, #2196f3);
-      }
-      .room-target-temp {
-        font-size: 0.8em;
-        color: var(--secondary-text-color);
-        margin-top: 2px;
-      }
-      .room-deficit {
-        font-size: 0.75em;
-        font-weight: 600;
-        color: var(--warning-color, #ff9800);
-        margin-top: 1px;
-      }
-
-      /* ---- Debug ---- */
-      .debug-toggle {
-        cursor: pointer;
-        padding: 4px 10px;
-        border-radius: 6px;
-        font-size: 0.75em;
-        background: var(--divider-color);
-        color: var(--secondary-text-color);
-        transition: background-color 0.2s;
-        user-select: none;
-      }
-      .debug-toggle:hover {
-        background: var(--secondary-background-color);
-      }
-      .debug-section {
-        margin-top: 14px;
-        padding: 12px;
-        background: var(--secondary-background-color);
-        border-radius: 8px;
-        font-family: monospace;
-        font-size: 0.72em;
-      }
-      .debug-title {
-        font-weight: 600;
-        margin-bottom: 8px;
-        font-size: 1.1em;
-      }
-      .debug-item {
+      .stepper {
+        flex: none;
         display: flex;
-        justify-content: space-between;
-        padding: 3px 0;
-        border-bottom: 1px solid var(--divider-color);
+        align-items: center;
+        gap: 2px;
+        padding: 3px;
+        border-radius: var(--zh-radius);
+        background: var(--zh-sub-bg);
       }
-      .debug-item:last-child {
-        border-bottom: none;
+      .stepper button {
+        width: 40px;
+        height: 40px;
+        border: none;
+        border-radius: 50%;
+        background: none;
+        color: var(--primary-text-color);
+        display: grid;
+        place-items: center;
+        cursor: pointer;
+        --mdc-icon-size: 22px;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
       }
-      .debug-key {
+      .stepper button:active {
+        background: color-mix(in srgb, var(--primary-text-color) 12%, transparent);
+      }
+      .stepper button:disabled {
+        opacity: 0.3;
+        cursor: default;
+      }
+      .target {
+        min-width: 48px;
+        text-align: center;
+        font-size: 16px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .target.pending {
+        color: var(--primary-color);
+      }
+
+      .details-toggle {
+        align-self: flex-start;
+        height: 36px;
+        padding: 0 16px;
+        border: none;
+        border-radius: var(--zh-radius);
+        background: var(--zh-bg);
+        color: var(--secondary-text-color);
+        font: inherit;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .details {
+        padding: 12px 18px;
+        border-radius: 20px;
+        background: var(--zh-bg);
+        font-size: 13px;
         color: var(--secondary-text-color);
       }
-      .debug-value {
+      .details div {
+        padding: 2px 0;
+      }
+      .details b {
+        color: var(--primary-text-color);
         font-weight: 500;
       }
-      .debug-value.true {
-        color: var(--success-color, #4caf50);
+
+      .missing {
+        padding: 16px 20px;
+        border-radius: var(--zh-radius);
+        background: var(--zh-bg);
+        color: var(--zh-error);
       }
-      .debug-value.false {
-        color: var(--error-color, #f44336);
+
+      @container (max-width: 400px) {
+        .room .icon {
+          display: none;
+        }
+        .text {
+          padding-left: 12px;
+        }
+        .zone .pill {
+          display: none;
+        }
       }
     `;
   }
@@ -395,282 +282,248 @@ class ZonalHeatingCard extends LitElement {
   render() {
     if (!this.hass || !this.config) return html``;
 
-    const zoneSensor = this.hass.states[this.config.zone_sensor];
-    if (!zoneSensor) {
-      return html`
-        <ha-card>
-          <div class="card-header">
-            <span class="card-title"
-              >${this.config.title || "Zonal Heating"}</span
-            >
-          </div>
-          <div>Zone sensor not found: ${this.config.zone_sensor}</div>
-        </ha-card>
-      `;
+    const zone = this.hass.states[this.config.zone_sensor];
+    if (!zone) {
+      return html`<ha-card>
+        <div class="missing">Zone sensor not found: ${this.config.zone_sensor}</div>
+      </ha-card>`;
     }
 
-    const state = zoneSensor.state;
-    const attrs = zoneSensor.attributes;
+    const attrs = zone.attributes;
+    const rooms = attrs.detailed_rooms || [];
 
     return html`
       <ha-card>
-        <div class="card-header">
-          <span class="card-title"
-            >${this.config.title ||
-            attrs.zone_climate ||
-            "Zonal Heating"}</span
-          >
-          <span class="debug-toggle" @click=${this._toggleDebug}>
-            ${this._showDebug ? "Hide Debug" : "Debug"}
-          </span>
-        </div>
-
-        ${this._renderZoneBanner(state, attrs)}
-        ${this._renderAlerts(attrs)}
-
-        <div class="rooms">
-          ${this._renderRooms(attrs)}
-        </div>
-
-        ${this._showDebug ? this._renderDebug(attrs) : ""}
+        ${this._renderZone(zone, attrs, rooms)}
+        ${rooms.map((room) => this._renderRoom(room, attrs))}
+        <button class="details-toggle" @click=${this._toggleDetails}>
+          ${this._showDetails ? "Hide details" : "Details"}
+        </button>
+        ${this._showDetails ? this._renderDetails(attrs) : ""}
       </ha-card>
     `;
   }
 
-  _renderZoneBanner(state, attrs) {
-    const icons = {
-      heating: "mdi:fire",
-      idle: "mdi:check-circle",
-      unavailable: "mdi:alert-circle",
-    };
-    const labels = {
-      heating: "Heating",
-      idle: "Idle",
-      unavailable: "Unavailable",
-    };
+  _zoneName(zone, attrs) {
+    if (this.config.title && this.config.title.trim()) return this.config.title;
+    const name = zone.attributes.friendly_name || attrs.zone_climate || "Heating";
+    return name.replace(/^Zonal Heating\s+/i, "").replace(/\s+Status$/i, "");
+  }
 
-    const detailedRooms = attrs.detailed_rooms || [];
-    const needingHeat = detailedRooms.filter((r) => r.calls_for_heat && r.is_on);
-    const totalRooms = detailedRooms.length;
+  _renderZone(zone, attrs, rooms) {
+    const calling = rooms.filter((r) => r.calls_for_heat && r.is_on);
+    const names = calling.map((r) => r.name).join(", ");
+    const wait = attrs.time_until_cycle_allowed_minutes;
+    const waitText = wait != null ? `${Math.max(1, Math.ceil(wait))} min` : "";
+    let colour = "--zh-ok";
+    let icon = "mdi:radiator-off";
+    let label = "Off";
+    let why = "All rooms are warm";
 
-    let summary = "";
-    if (state === "heating") {
-      if (needingHeat.length === 0) {
-        summary = "Waiting to turn off (all rooms satisfied)";
-      } else if (needingHeat.length <= 3) {
-        summary = needingHeat.map((r) => r.name).join(", ");
-      } else {
-        summary = `${needingHeat.length} of ${totalRooms} rooms calling for heat`;
-      }
-    } else if (state === "idle") {
-      summary =
-        totalRooms > 0
-          ? "All rooms at target temperature"
-          : "No rooms configured";
+    if (zone.state === "unavailable" || zone.state === "unknown") {
+      colour = "--zh-error";
+      icon = "mdi:alert-circle";
+      label = "Unavailable";
+      why = "The zone thermostat is not responding";
+    } else if (attrs.zone_is_on && calling.length) {
+      colour = "--zh-heat";
+      icon = "mdi:fire";
+      label = "Heating";
+      why = names;
+    } else if (attrs.zone_is_on) {
+      colour = "--zh-heat";
+      icon = "mdi:fire";
+      label = "Heating";
+      why = attrs.cycle_time_blocking
+        ? `All rooms warm, stopping in ${waitText}`
+        : "All rooms warm, stopping";
+    } else if (calling.length) {
+      colour = "--zh-warn";
+      icon = "mdi:timer-sand";
+      label = attrs.cycle_time_blocking ? `Starting in ${waitText}` : "Starting";
+      why = names;
     } else {
-      summary = "Zone thermostat unavailable";
+      const off = rooms.filter((r) => !r.is_on).length;
+      const windows = rooms.filter((r) => r.is_on && r.window_confirmed).length;
+      const parts = [];
+      if (windows) parts.push(`${windows} window${windows > 1 ? "s" : ""} open`);
+      if (off) parts.push(`${off} room${off > 1 ? "s" : ""} off`);
+      if (parts.length) why = `Rooms warm · ${parts.join(" · ")}`;
     }
 
-    const zoneTemp = attrs.zone_current_temp;
-
+    const lit = colour === "--zh-heat" || colour === "--zh-warn" || colour === "--zh-error";
     return html`
-      <div class="zone-banner ${state}">
-        <div class="zone-icon ${state}">
-          <ha-icon icon="${icons[state] || "mdi:thermostat"}"></ha-icon>
+      <div class="bubble zone ${lit ? "lit" : ""}" style="--zh-colour: var(${colour})">
+        <div class="icon"><ha-icon icon=${icon}></ha-icon></div>
+        <div class="text" @click=${() => this._moreInfo(attrs.zone_climate)}>
+          <div class="name">${this._zoneName(zone, attrs)}</div>
+          <div class="state">
+            <span class="label">${label}</span>
+            ${why ? html`<span class="why">${why}</span>` : ""}
+          </div>
         </div>
-        <div class="zone-info">
-          <div class="zone-state ${state}">${labels[state] || state}</div>
-          <div class="zone-summary">${summary}</div>
-        </div>
-        ${zoneTemp != null
-          ? html`<span class="zone-temp"
-              >${Number(zoneTemp).toFixed(1)}°</span
-            >`
+        ${attrs.zone_current_temp != null
+          ? html`<div class="pill">
+              <ha-icon icon="mdi:thermostat"></ha-icon>
+              ${Number(attrs.zone_current_temp).toFixed(1)}°
+            </div>`
           : ""}
       </div>
     `;
   }
 
-  _renderAlerts(attrs) {
-    const chips = [];
-    const rooms = attrs.detailed_rooms || [];
-
-    if (attrs.cycle_time_blocking) {
-      const t = attrs.time_until_cycle_allowed_minutes;
-      chips.push(html`
-        <span class="alert-chip warning">
-          <ha-icon icon="mdi:timer-sand"></ha-icon>
-          Cycle cooldown${t ? ` (${t.toFixed(1)} min)` : ""}
-        </span>
-      `);
+  _roomStatus(room, attrs) {
+    if (!room.is_on) return ["off", "--zh-off", "mdi:power", "Off"];
+    if (room.window_confirmed) {
+      return ["window", "--zh-window", "mdi:window-open-variant", "Window open"];
     }
-
-    if (attrs.startup_grace_period) {
-      chips.push(html`
-        <span class="alert-chip success">
-          <ha-icon icon="mdi:rocket-launch"></ha-icon>
-          Startup grace
-        </span>
-      `);
+    if (room.window_open) {
+      return ["window", "--zh-window", "mdi:window-open-variant", "Window open"];
     }
-
-    const windowRooms = rooms.filter(
-      (r) => r.window_confirmed || r.window_open
-    );
-    if (windowRooms.length > 0) {
-      chips.push(html`
-        <span
-          class="alert-chip info"
-          title="${windowRooms.map((r) => r.name).join(", ")}"
-        >
-          <ha-icon icon="mdi:window-open-variant"></ha-icon>
-          ${windowRooms.length} window${windowRooms.length > 1 ? "s" : ""} open
-        </span>
-      `);
+    if (room.calls_for_heat) {
+      return attrs.zone_is_on
+        ? ["heat", "--zh-heat", "mdi:fire", "Heating"]
+        : ["heat", "--zh-warn", "mdi:timer-sand", "Waiting"];
     }
-
-    const offRooms = rooms.filter((r) => !r.is_on);
-    if (offRooms.length > 0) {
-      chips.push(html`
-        <span
-          class="alert-chip neutral"
-          title="${offRooms.map((r) => r.name).join(", ")}"
-        >
-          <ha-icon icon="mdi:power-off"></ha-icon>
-          ${offRooms.length} room${offRooms.length > 1 ? "s" : ""} off
-        </span>
-      `);
+    if (room.needs_heat && room.demand_stalled) {
+      return ["stalled", "--zh-error", "mdi:thermometer-alert", "Not warming"];
     }
-
-    if (chips.length === 0) return html``;
-    return html`<div class="alerts">${chips}</div>`;
+    if (room.needs_heat && room.trv_satisfied) {
+      return ["valve", "--zh-warn", "mdi:pipe-valve", "Valve closed"];
+    }
+    return ["ok", "--zh-ok", "mdi:check", "Warm"];
   }
 
-  _renderRooms(attrs) {
-    const rooms = attrs.detailed_rooms || [];
-    if (rooms.length === 0) return html`<div>No rooms configured</div>`;
-    return rooms.map((room) => this._renderRoom(room));
+  _climateFor(room) {
+    const states = this.hass.states;
+    const ids = Object.keys(states).filter((id) => id.startsWith("climate."));
+    if (room.trv_entity) {
+      const match = ids.find(
+        (id) => states[id].attributes.trv_entity === room.trv_entity
+      );
+      if (match) return match;
+    }
+    const suffix = ` ${room.name}`.toLowerCase();
+    return ids.find((id) => {
+      const a = states[id].attributes;
+      return a.trv_entity && (a.friendly_name || "").toLowerCase().endsWith(suffix);
+    });
   }
 
-  _renderRoom(room) {
-    let status = "satisfied";
-    let icon = "mdi:thermometer-check";
-    let statusLabel = "At target";
-
-    if (!room.is_on) {
-      status = "off";
-      icon = "mdi:power-off";
-      statusLabel = "Off";
-    } else if (room.window_confirmed || room.window_open) {
-      status = "window-open";
-      icon = "mdi:window-open-variant";
-      statusLabel = room.window_confirmed ? "Window open" : "Detecting";
-    } else if (room.needs_heat && room.demand_stalled) {
-      status = "stalled";
-      icon = "mdi:thermometer-alert";
-      statusLabel = "Not warming";
-    } else if (room.needs_heat && room.trv_satisfied) {
-      statusLabel = "TRV satisfied";
-    } else if (room.needs_heat) {
-      status = "needs-heat";
-      icon = "mdi:fire";
-      statusLabel = "Calling";
-    }
-
-    const currentTemp =
-      room.current_temp != null ? Number(room.current_temp).toFixed(1) : "--";
-    const targetTemp =
-      room.target_temp != null ? Number(room.target_temp).toFixed(1) : "--";
-    const deficit = room.deficit || 0;
+  _renderRoom(room, attrs) {
+    const [cls, colour, icon, label] = this._roomStatus(room, attrs);
+    const entityId = this._climateFor(room);
+    const climate = entityId ? this.hass.states[entityId] : null;
+    const pending = entityId ? this._pending[entityId] : undefined;
+    const target = pending ?? climate?.attributes.temperature ?? room.target_temp;
+    const min = climate?.attributes.min_temp ?? 5;
+    const max = climate?.attributes.max_temp ?? 30;
+    const current =
+      room.current_temp != null ? `${Number(room.current_temp).toFixed(1)}°` : "--";
 
     return html`
-      <div class="room ${status}">
-        <div class="room-indicator ${status}">
-          <ha-icon icon="${icon}"></ha-icon>
-        </div>
-        <div class="room-body">
-          <div class="room-name-row">
-            <span class="room-name">${room.name || "Unknown"}</span>
-            <span class="room-status-badge ${status}">${statusLabel}</span>
+      <div
+        class="bubble room ${cls} ${cls === "heat" ? "lit" : ""}"
+        style="--zh-colour: var(${colour})"
+      >
+        <div class="icon"><ha-icon icon=${icon}></ha-icon></div>
+        <div class="text" @click=${() => this._moreInfo(entityId)}>
+          <div class="name">${room.name}</div>
+          <div class="state">
+            <span class="temp">${current}</span>
+            <span class="label">${label}</span>
           </div>
-          <div class="room-reason">${this._getRoomReason(room)}</div>
         </div>
-        <div class="room-temps">
-          <div class="room-current-temp">${currentTemp}°</div>
-          <div class="room-target-temp">Target ${targetTemp}°</div>
-          ${deficit > 0
-            ? html`<div class="room-deficit">
-                ${deficit.toFixed(1)}° below
-              </div>`
-            : ""}
+        <div class="stepper">
+          <button
+            aria-label="Lower ${room.name} target"
+            ?disabled=${!entityId || target == null || target <= min}
+            @click=${() => this._step(entityId, target, -this._stepSize(climate), min, max)}
+          >
+            <ha-icon icon="mdi:minus"></ha-icon>
+          </button>
+          <div class="target ${pending != null ? "pending" : ""}">
+            ${target != null ? `${Number(target).toFixed(1)}°` : "--"}
+          </div>
+          <button
+            aria-label="Raise ${room.name} target"
+            ?disabled=${!entityId || target == null || target >= max}
+            @click=${() => this._step(entityId, target, this._stepSize(climate), min, max)}
+          >
+            <ha-icon icon="mdi:plus"></ha-icon>
+          </button>
         </div>
       </div>
     `;
   }
 
-  _getRoomReason(room) {
-    if (!room.is_on) return "Climate entity is off";
-    if (room.window_confirmed) return "Window confirmed open - heat paused";
-    if (room.window_open) return "Window detected - confirming...";
-    if (room.needs_heat && room.demand_stalled) {
-      return "Not warming while the zone heats - check the TRV and radiator";
-    }
-    if (room.needs_heat && room.trv_satisfied) {
-      return "Below target, but the TRV has closed its valve";
-    }
-    if (room.needs_heat) {
-      const deficit = room.deficit || 0;
-      return `${deficit.toFixed(1)}° below target`;
-    }
-    return "Temperature at or above target";
+  _stepSize(climate) {
+    return climate?.attributes.target_temp_step || this.config.step || 0.5;
   }
 
-  _renderDebug(attrs) {
-    const items = [
-      { key: "zone_is_on", value: attrs.zone_is_on },
-      { key: "min_on_time", value: `${attrs.min_on_time_minutes} min` },
-      { key: "min_off_time", value: `${attrs.min_off_time_minutes} min` },
-      {
-        key: "time_since_change",
-        value:
-          attrs.time_since_last_change_minutes != null
-            ? `${attrs.time_since_last_change_minutes} min`
-            : "N/A",
-      },
-      { key: "cycle_blocking", value: attrs.cycle_time_blocking },
-      { key: "retry_timer", value: attrs.retry_timer_active },
-      { key: "rooms_needing_heat", value: attrs.rooms_needing_heat_count },
-    ];
+  _step(entityId, target, delta, min, max) {
+    if (!entityId || target == null) return;
+    const next = Math.min(max, Math.max(min, Math.round((target + delta) * 10) / 10));
+    this._pending = { ...this._pending, [entityId]: next };
+    clearTimeout(this._timers[entityId]);
+    this._timers[entityId] = setTimeout(() => this._send(entityId), SEND_DELAY_MS);
+  }
 
+  async _send(entityId) {
+    const temperature = this._pending[entityId];
+    delete this._timers[entityId];
+    try {
+      await this.hass.callService("climate", "set_temperature", {
+        entity_id: entityId,
+        temperature,
+      });
+    } finally {
+      this._timers[entityId] = setTimeout(() => {
+        delete this._timers[entityId];
+        if (this._pending[entityId] === temperature) {
+          const { [entityId]: _, ...rest } = this._pending;
+          this._pending = rest;
+        }
+      }, SEND_DELAY_MS * 5);
+    }
+  }
+
+  _moreInfo(entityId) {
+    if (!entityId) return;
+    this.dispatchEvent(
+      new CustomEvent("hass-more-info", {
+        detail: { entityId },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
+  _renderDetails(attrs) {
+    const rooms = attrs.detailed_rooms || [];
+    const yesNo = (v) => (v ? "yes" : "no");
     return html`
-      <div class="debug-section">
-        <div class="debug-title">Zone Debug</div>
-        ${items.map(
-          (item) => html`
-            <div class="debug-item">
-              <span class="debug-key">${item.key}</span>
-              <span
-                class="debug-value ${typeof item.value === "boolean"
-                  ? item.value
-                  : ""}"
-                >${this._formatDebugValue(item.value)}</span
-              >
-            </div>
-          `
+      <div class="details">
+        <div>${attrs.reason || ""}</div>
+        <div>
+          Thermostat <b>${attrs.zone_climate}</b> is
+          <b>${attrs.zone_is_on ? "on" : "off"}</b>, last changed
+          <b>${attrs.time_since_last_change_minutes ?? "?"} min</b> ago
+          (min on ${attrs.min_on_time_minutes} / off ${attrs.min_off_time_minutes} min)
+        </div>
+        ${rooms.map(
+          (r) => html`<div>
+            <b>${r.name}</b>: needs heat ${yesNo(r.needs_heat)}, calling
+            ${yesNo(r.calls_for_heat)}, valve closed ${yesNo(r.trv_satisfied)},
+            not warming ${yesNo(r.demand_stalled)}
+          </div>`
         )}
       </div>
     `;
   }
 
-  _formatDebugValue(value) {
-    if (typeof value === "boolean") return value ? "Yes" : "No";
-    if (value == null) return "N/A";
-    return value;
-  }
-
-  _toggleDebug() {
-    this._showDebug = !this._showDebug;
-    this.requestUpdate();
+  _toggleDetails() {
+    this._showDetails = !this._showDetails;
   }
 }
 
