@@ -1,3 +1,5 @@
+await customElements.whenDefined("ha-panel-lovelace");
+
 const LitElement = Object.getPrototypeOf(
   customElements.get("ha-panel-lovelace")
 );
