@@ -66,8 +66,14 @@ class ZoneStateMachine:
         self._last_zone_change = None
         self._zone_current_temp: float | None = None
 
-        # Startup tracking - ignore min on/off times during grace period
+        # Startup tracking - min on/off times are ignored during the grace period,
+        # unless the last zone change was restored and the timers can be trusted
         self._startup_time = None
+        self._state_restored = False
+
+        # Set by async_stop so work already in flight cannot re-arm timers or
+        # command the thermostat after a reload
+        self._stopped = False
 
         # Retry timer for min on/off time blocking
         self._retry_timer: asyncio.TimerHandle | None = None
@@ -92,9 +98,11 @@ class ZoneStateMachine:
         """Start the zone state machine."""
         _LOGGER.info("Starting zone state machine for %s", self.zone_name)
 
+        self._stopped = False
         self._startup_time = dt_util.now()
 
         state_restored = await self._async_restore_state()
+        self._state_restored = state_restored
         if state_restored:
             _LOGGER.info(
                 "%s: State restored from previous session, skipping startup grace period",
@@ -168,6 +176,7 @@ class ZoneStateMachine:
 
     async def async_stop(self) -> None:
         """Stop the zone state machine."""
+        self._stopped = True
         await self._async_save_state()
 
         if self._retry_timer:
@@ -197,42 +206,40 @@ class ZoneStateMachine:
     @callback
     def _async_room_changed(self, event: Event) -> None:
         """Handle room state changes - debounced zone evaluation."""
-        if self._eval_debounce_timer:
-            self._eval_debounce_timer.cancel()
-
-        self._eval_debounce_timer = self.hass.loop.call_later(
-            1.0,
-            lambda: self.hass.async_create_task(self._async_debounced_evaluate()),
-        )
+        self._schedule_evaluation(1.0)
 
     @callback
     def _on_room_needs_heat_changed(self) -> None:
         """Handle room needs_heat change (e.g. window confirmed open/closed)."""
-        if self._eval_debounce_timer:
-            self._eval_debounce_timer.cancel()
-
-        self._eval_debounce_timer = self.hass.loop.call_later(
-            0.5,
-            lambda: self.hass.async_create_task(self._async_debounced_evaluate()),
-        )
+        self._schedule_evaluation(0.5)
 
     @callback
     def _async_room_sensor_changed(self, event: Event) -> None:
         """Handle external sensor/window changes that affect room needs_heat."""
+        self._schedule_evaluation(2.0)
+
+    def _schedule_evaluation(self, delay: float) -> None:
+        """Evaluate the zone after a delay, replacing any evaluation already pending."""
         if self._eval_debounce_timer:
             self._eval_debounce_timer.cancel()
+            self._eval_debounce_timer = None
+
+        if self._stopped:
+            return
 
         self._eval_debounce_timer = self.hass.loop.call_later(
-            2.0,
-            lambda: self.hass.async_create_task(
-                self._async_debounced_evaluate()
-            ),
+            delay,
+            lambda: self.hass.async_create_task(self._async_debounced_evaluate()),
         )
 
     def _schedule_periodic_check(self) -> None:
         """Schedule the next periodic safety check."""
         if self._periodic_timer:
             self._periodic_timer.cancel()
+            self._periodic_timer = None
+
+        if self._stopped:
+            return
 
         self._periodic_timer = self.hass.loop.call_later(
             self._periodic_interval,
@@ -241,6 +248,9 @@ class ZoneStateMachine:
 
     async def _async_periodic_check(self) -> None:
         """Perform periodic safety check to ensure state consistency."""
+        if self._stopped:
+            return
+
         try:
             _LOGGER.debug(
                 "%s: Running periodic safety check",
@@ -270,6 +280,12 @@ class ZoneStateMachine:
         """Update zone climate state from entity."""
         state = self.hass.states.get(self.zone_climate)
         if not state:
+            return
+
+        # An offline thermostat tells us nothing about whether it is heating. Keep
+        # the last known state so a brief dropout is not read as off-then-on, which
+        # would restart the min on/off clock and the rooms' stall tracking.
+        if state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             return
 
         old_zone_is_on = self._zone_is_on
@@ -309,6 +325,9 @@ class ZoneStateMachine:
             self._retry_timer.cancel()
             self._retry_timer = None
 
+        if self._stopped:
+            return
+
         _LOGGER.debug("%s: ZONE EVALUATION STARTED", self.zone_name)
 
         rooms_needing_heat = []
@@ -342,6 +361,9 @@ class ZoneStateMachine:
 
         desired_zone_on = len(rooms_needing_heat) > 0
 
+        if not desired_zone_on and self._waiting_for_rooms():
+            return
+
         if self._should_hold_current_state(desired_zone_on):
             return
 
@@ -373,12 +395,50 @@ class ZoneStateMachine:
         return self._is_in_startup_grace_period()
 
     def _is_in_startup_grace_period(self) -> bool:
-        """Check if we're still in the startup grace period."""
+        """Check if min on/off times are still being ignored after startup.
+
+        Only applies when the last zone change could not be restored. With a
+        restored change time the timers are trustworthy and stay enforced, so a
+        reload cannot be used to short-cycle the boiler.
+        """
+        if self._state_restored:
+            return False
+        return self._seconds_since_startup() < STARTUP_GRACE_PERIOD
+
+    def _seconds_since_startup(self) -> float:
+        """Return seconds since the state machine started, or infinity if it has not."""
         if self._startup_time is None:
+            return float("inf")
+        return (dt_util.now() - self._startup_time).total_seconds()
+
+    def _waiting_for_rooms(self) -> bool:
+        """Return True if a running zone should not be turned off yet after startup.
+
+        Zigbee2MQTT TRVs are unknown for a while after Home Assistant starts, so no
+        room appears to need heat. Turning the zone off on that evidence would then
+        hold it off for min_off_time once the rooms report in.
+        """
+        if not self._zone_is_on:
             return False
 
-        time_since_startup = (dt_util.now() - self._startup_time).total_seconds()
-        return time_since_startup < STARTUP_GRACE_PERIOD
+        remaining = STARTUP_GRACE_PERIOD - self._seconds_since_startup()
+        if remaining <= 0:
+            return False
+
+        waiting = [room.room_name for room in self.rooms if not room.state_known]
+        if not waiting:
+            return False
+
+        _LOGGER.debug(
+            "%s: Not turning zone off yet - still waiting for %s to report after startup",
+            self.zone_name,
+            ", ".join(waiting),
+        )
+        self._retry_timer = self.hass.loop.call_later(
+            remaining + 1,
+            lambda: self.hass.async_create_task(self._async_debounced_evaluate()),
+        )
+        return True
 
     @property
     def current_hold_time(self) -> int:

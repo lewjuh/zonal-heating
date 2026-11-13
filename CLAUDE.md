@@ -46,7 +46,7 @@ ConfigFlow -> __init__.py -> Climate Entities (UI layer)
 Only **4 paths** write to TRVs:
 
 1. **User sets temperature** via virtual entity -> forwards to TRV (`climate.py`)
-2. **Startup sync** pushes restored target and on/off mode to TRV; a TRV in `auto` or another active mode is not forced to `heat` (`climate.py`)
+2. **Startup sync** pushes restored target and on/off mode to TRV; a TRV in `auto` or another active mode is not forced to `heat` (`climate.py`). A room with no restored state (first install, new or renamed room) pushes nothing and adopts the TRV's target and mode: its 20C/heat defaults are placeholders, and pushing them overwrote existing TRV targets up to 1.9.4
 3. **Calibration sync** writes external temp/offset to TRV number entity (`room_state_machine.py`) - not a target temp write. Sync entities are discovered from the entity registry, never from current states: Z2M entities are `unknown` for ~45 s after HA starts, and state-based discovery silently disabled calibration in 1.8.x. Sonoff TRVZB's external temperature input and sensor selector stay `unknown` until written, so sync writes them regardless (selector option `remote_temperature`); waiting for them to become known left calibration dead in 1.9.0. If the TRV has not adopted the external temperature 10 min after the first write (selector not reporting the remote option, or, without a selector, its reading not matching), sync falls back to the calibration offset: some TRVZB firmware ignores the remote sensor
 4. **Zone thermostat** gets set to heat at current+5, capped at its `max_temp`, when turning on; a zone already in `heat` whose setpoint is less than 1C above its current temperature (its own schedule or a manual change) is re-boosted the same way (`zone_state_machine.py`)
 
@@ -164,6 +164,11 @@ The `config_flow.py` implements a **multi-step wizard**:
 - Respects `min_on_time` / `min_off_time` and schedules automatic retry when blocked
 - Turns on with `climate.set_hvac_mode: heat` followed by `climate.set_temperature` at `current + 5C` capped at `max_temp`. Never fold `hvac_mode` into the `set_temperature` call: HA passes it through to the integration, and some ignore it (meross_lan MTS200/215 does), which left the zone thermostats stuck off in 1.8.x
 - Any mode other than `off` counts as on when deciding whether to turn the zone off
+- The 120 s startup grace period (min on/off times ignored) only applies when the last zone change could not be restored from storage. With a restored change time the timers stay enforced across restarts and reloads
+- For 120 s after startup a zone that is on is not turned off while any room's TRV has yet to report (`state_known`): Z2M TRVs are `unknown` at first, and turning off on that evidence would hold the zone off for `min_off_time`
+- An `unavailable`/`unknown` zone thermostat keeps its last known on/off state; a dropout is not an off-then-on and does not restart the min on/off clock
+- `async_stop` sets `_stopped`, which every timer and evaluation checks, so work in flight during a reload cannot re-arm timers on the old instance
+- Reconfigure saves with `async_update_entry` and lets the update listener reload; `async_update_reload_and_abort` on top of the listener reloaded twice
 
 ## Common Issues & Solutions
 
@@ -189,7 +194,6 @@ When debugging, search logs for:
 - `"ZONE EVALUATION"` - zone decision points
 - `"MIN ON TIME"` / `"MIN OFF TIME"` - cycling protection
 - `"Not warming"` - stall guard dropped a room's demand
-- `"ZONE TARGET TOO LOW"` - zone was in heat but its setpoint was too low to fire, so it was raised
 - `"ZONE TARGET TOO LOW"` - zone was in heat but its setpoint was too low to fire, so it was raised
 - `"Window opened"` - window detection
 - `"NEEDS HEAT"` - room heating decisions

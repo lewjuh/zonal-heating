@@ -74,6 +74,8 @@ class RoomStateMachine:
         self._calling_for_heat = False
         self._trv_temp: float | None = None
         self._trv_action: str | None = None
+        self._state_known = False
+        self._initial_sync_timer: asyncio.TimerHandle | None = None
 
         # Stall guard: rooms that don't warm while the zone runs stop holding it on
         self._progress_since: datetime | None = None
@@ -152,7 +154,7 @@ class RoomStateMachine:
             )
             await self._async_discover_sync_entities()
             if self._external_temp_available or self._calibration_available:
-                self.hass.loop.call_later(
+                self._initial_sync_timer = self.hass.loop.call_later(
                     5.0,
                     lambda: self.hass.async_create_task(self._async_forced_initial_sync()),
                 )
@@ -196,6 +198,10 @@ class RoomStateMachine:
         if self._window_timer:
             self._window_timer.cancel()
             self._window_timer = None
+
+        if self._initial_sync_timer:
+            self._initial_sync_timer.cancel()
+            self._initial_sync_timer = None
 
     @callback
     def _async_climate_changed(self, event: Event) -> None:
@@ -443,6 +449,7 @@ class RoomStateMachine:
 
     async def _async_forced_initial_sync(self) -> None:
         """Force sync external temperature to TRV on startup, bypassing thresholds."""
+        self._initial_sync_timer = None
         if not self.temp_sensor:
             return
 
@@ -719,6 +726,8 @@ class RoomStateMachine:
                     self._notify_needs_heat_changed()
             return
 
+        self._state_known = True
+
         old_current = self._current_temp
         old_target = self._target_temp
         old_is_on = self._is_on
@@ -919,6 +928,11 @@ class RoomStateMachine:
     def is_on(self) -> bool:
         """Return True if climate is on."""
         return self._is_on
+
+    @property
+    def state_known(self) -> bool:
+        """Return True once the TRV has reported a usable state since startup."""
+        return self._state_known
 
     @property
     def window_open_confirmed(self) -> bool:

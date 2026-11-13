@@ -158,9 +158,12 @@ async def test_reconfigure_saves_changes(hass: HomeAssistant) -> None:
     await hass.config_entries.flow.async_configure(
         flow_id, {"name": "Main Bedroom", "trv_entity": "climate.bedroom_trv"}
     )
-    result = await hass.config_entries.flow.async_configure(flow_id, {"action": "save"})
-    await hass.async_block_till_done()
+    # The entry's update listener does the reload, so the flow must not schedule another
+    with patch.object(hass.config_entries, "async_schedule_reload") as schedule_reload:
+        result = await hass.config_entries.flow.async_configure(flow_id, {"action": "save"})
+        await hass.async_block_till_done()
 
+    assert not schedule_reload.called
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
     assert original_zones == snapshot, "existing entry data was mutated in place"
