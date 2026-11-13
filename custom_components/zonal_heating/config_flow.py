@@ -415,11 +415,12 @@ class ZonalHeatingConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 new_data = {**self._reconfigure_entry.data, CONF_ZONES: self._zones}
 
-                return self.async_update_reload_and_abort(
-                    self._reconfigure_entry,
-                    data=new_data,
-                    reason="reconfigure_successful",
+                # The entry's update listener reloads it. Using
+                # async_update_reload_and_abort here as well reloaded it twice.
+                self.hass.config_entries.async_update_entry(
+                    self._reconfigure_entry, data=new_data
                 )
+                return self.async_abort(reason="reconfigure_successful")
 
         menu_options = ["add_room", "save"]
         if self._current_rooms:

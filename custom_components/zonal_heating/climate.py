@@ -153,6 +153,10 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         # Track when we last pushed a target TO the TRV (suppresses sync-back)
         self._target_set_at: float = 0
 
+        # True once a previous target and mode have been restored. Without them the
+        # defaults above are placeholders and must never be pushed to the TRV.
+        self._restored = False
+
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info to group entities under a zone device."""
@@ -169,15 +173,13 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         await super().async_added_to_hass()
 
         # Restore previous state
-        if (last_state := await self.async_get_last_state()) is not None:
-            self._attr_hvac_mode = (
-                HVACMode(last_state.state)
-                if last_state.state in self._attr_hvac_modes
-                else HVACMode.HEAT
-            )
+        last_state = await self.async_get_last_state()
+        if last_state is not None and last_state.state in self._attr_hvac_modes:
+            self._attr_hvac_mode = HVACMode(last_state.state)
             self._attr_target_temperature = last_state.attributes.get(
                 ATTR_TEMPERATURE, 20.0
             )
+            self._restored = True
 
         # Track TRV state changes
         self._remove_listeners.append(
@@ -209,8 +211,11 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
             )
         )
 
-        # Suppress TRV->virtual target sync until startup sync completes
-        self._target_set_at = self.hass.loop.time()
+        # Suppress TRV->virtual target sync until startup sync completes. A room
+        # with nothing to restore (first install, new or renamed room) has no user
+        # choice to push, so it adopts the TRV's target and mode straight away.
+        if self._restored:
+            self._target_set_at = self.hass.loop.time()
 
         # Initial update
         await self._async_update_state()
@@ -218,10 +223,17 @@ class ZonalHeatingClimate(ClimateEntity, RestoreEntity):
         self._async_update_zone_active()
 
         # Schedule TRV target sync after brief delay
-        self._startup_sync_timer = self.hass.loop.call_later(
-            3.0,
-            lambda: self.hass.async_create_task(self._async_startup_sync_trv()),
-        )
+        if self._restored:
+            self._startup_sync_timer = self.hass.loop.call_later(
+                3.0,
+                lambda: self.hass.async_create_task(self._async_startup_sync_trv()),
+            )
+        else:
+            _LOGGER.info(
+                "%s: No previous state to restore - adopting target and mode from TRV %s",
+                self._attr_name,
+                self._trv_entity,
+            )
 
     async def async_will_remove_from_hass(self) -> None:
         """Clean up listeners and timers when entity is removed."""

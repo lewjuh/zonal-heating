@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from pytest_homeassistant_custom_component.common import async_mock_service
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_mock_service,
+    mock_restore_cache,
+)
 
 from homeassistant.components.climate import HVACMode
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, State
 
+import custom_components.zonal_heating  # noqa: F401 - imported so it can be patched
 from custom_components.zonal_heating.climate import ZonalHeatingClimate
+from custom_components.zonal_heating.const import DOMAIN
 
 TRV = "climate.bedroom_trv"
 
@@ -75,3 +83,62 @@ async def test_startup_sync_skips_unavailable_trv(hass: HomeAssistant) -> None:
 
     assert not set_mode
     assert not set_temp
+
+
+VIRTUAL = "climate.zonal_heating_upstairs_bedroom"
+
+
+async def _setup_entry(hass: HomeAssistant) -> MockConfigEntry:
+    """Set up a one-room entry without the real frontend and http components."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            "zones": [
+                {
+                    "name": "Upstairs",
+                    "zone_thermostat": "climate.upstairs",
+                    "rooms": [{"name": "Bedroom", "trv_entity": TRV}],
+                }
+            ],
+            "settings": {},
+        },
+    )
+    entry.add_to_hass(hass)
+    hass.config.components.update({"frontend", "http"})
+    hass.http = MagicMock()
+    hass.http.async_register_static_paths = AsyncMock()
+    with patch("custom_components.zonal_heating.add_extra_js_url"):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    return entry
+
+
+async def test_new_room_adopts_trv_instead_of_pushing_defaults(hass: HomeAssistant) -> None:
+    """A room with no previous state takes the TRV's target and mode, and writes nothing."""
+    hass.states.async_set("climate.upstairs", "off", {"current_temperature": 19.0})
+    hass.states.async_set(TRV, "off", {"current_temperature": 18.0, "temperature": 17.0})
+
+    entry = await _setup_entry(hass)
+
+    state = hass.states.get(VIRTUAL)
+    assert state.state == HVACMode.OFF
+    assert state.attributes["temperature"] == 17.0
+    entity = hass.data["climate"].get_entity(VIRTUAL)
+    assert entity._startup_sync_timer is None, "defaults must not be pushed to the TRV"
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_restored_room_still_pushes_its_target(hass: HomeAssistant) -> None:
+    """A room with a restored target keeps it and schedules the startup sync."""
+    mock_restore_cache(hass, [State(VIRTUAL, "heat", {"temperature": 21.0})])
+    hass.states.async_set("climate.upstairs", "off", {"current_temperature": 19.0})
+    hass.states.async_set(TRV, "off", {"current_temperature": 18.0, "temperature": 17.0})
+
+    entry = await _setup_entry(hass)
+
+    state = hass.states.get(VIRTUAL)
+    assert state.state == HVACMode.HEAT
+    assert state.attributes["temperature"] == 21.0
+    entity = hass.data["climate"].get_entity(VIRTUAL)
+    assert entity._startup_sync_timer is not None
+    await hass.config_entries.async_unload(entry.entry_id)
